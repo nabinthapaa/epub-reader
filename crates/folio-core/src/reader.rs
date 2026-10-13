@@ -33,10 +33,15 @@ use crate::theme::{Theme, ThemePreset};
 const LAYOUT_CACHE: usize = 3;
 /// How many parsed chapters to keep.
 const CHAPTER_CACHE: usize = 6;
-/// Decoded images held for the open book before the map is recycled.
-const IMAGE_CACHE: usize = 48;
+/// Decoded images held for the open book before the map is recycled. Counted
+/// in bytes: one 2000x2000 SVG decodes to 16MB, so a limit on the number of
+/// entries bounds nothing that matters.
+const IMAGE_CACHE_BYTES: usize = 96 * 1024 * 1024;
 /// Band height as a multiple of the viewport.
 const BAND_FACTOR: f32 = 2.2;
+/// How far the view may be eased (rather than snapped) without running off the
+/// painted band: half the pre-roll, with a little margin.
+pub const EASE_LIMIT_FRACTION: f32 = (BAND_FACTOR - 1.0) / 2.0 * 0.85;
 /// Ceiling on a band's pixels, so a 4K window does not paint (and ship to the
 /// UI) tens of megabytes per repaint.
 const BAND_BYTE_BUDGET: f32 = 32.0 * 1024.0 * 1024.0;
@@ -140,12 +145,19 @@ struct Cursor {
     scroll: f32,
 }
 
+/// What a laid-out chapter actually depends on.
+///
+/// Keying on the raw window size meant every pixel of a resize drag produced a
+/// fresh key — and so a full reshape of every block — even though the column is
+/// pinned at the measure cap for any window wider than about 830px, and even
+/// though the layouts were byte-identical.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct LayoutKey {
     chapter: usize,
-    width: u32,
-    height: u32,
-    narrowed: bool,
+    /// Bits of the column width, which already folds in margins and focus mode.
+    column_width: u32,
+    /// Bits of the tallest block that can still fit a screen.
+    max_block_height: u32,
     type_key: String,
 }
 
@@ -185,10 +197,17 @@ pub struct Reader {
     images: HashMap<String, DecodedImage>,
     band: Option<Band>,
     pending_transition: Option<Transition>,
-    /// Characters per chapter, filled in as chapters are parsed. Progress over
-    /// a whole book is meaningless when it counts spine entries: in most EPUBs
-    /// a title page and a forty-page chapter each count once.
+    /// Characters per chapter, filled in as chapters are parsed. Used for the
+    /// time-left estimate, which only ever concerns the chapter in hand.
     chapter_chars: Vec<Option<usize>>,
+    /// Relative weight of every chapter, taken once at open from the size of
+    /// each spine resource. Progress that counts spine entries is meaningless
+    /// — a title page and a forty-page chapter weigh the same — but a weight
+    /// that changes as chapters are parsed is worse: the same position would
+    /// report different percentages from one frame to the next, and the number
+    /// is persisted to the shelf. Markup overhead is roughly proportional to
+    /// text, so byte sizes are a good enough and, crucially, stable ruler.
+    chapter_weights: Vec<f32>,
 }
 
 impl Reader {
@@ -254,7 +273,11 @@ impl Reader {
             band: None,
             pending_transition: None,
             chapter_chars: vec![None; chapter_count],
+            chapter_weights: Vec::new(),
         };
+        reader.chapter_weights = (0..chapter_count)
+            .map(|chapter| reader.book.chapter_bytes(chapter).unwrap_or(0).max(1) as f32)
+            .collect();
         reader.go_to(start)?;
         Ok(reader)
     }
@@ -296,11 +319,26 @@ impl Reader {
 
     /// Apply a command and render the resulting frame.
     pub fn apply(&mut self, command: Command) -> Result<View> {
+        self.mutate(command)?;
+        self.render()
+    }
+
+    /// Apply a command without painting.
+    ///
+    /// The worker coalesces bursts of commands and paints only the last. A
+    /// painted-but-discarded band would leave the reader believing the window
+    /// shows pixels it never received, so intermediate commands skip the
+    /// raster entirely — which also saves the work.
+    pub fn apply_quietly(&mut self, command: Command) -> Result<()> {
+        self.mutate(command)
+    }
+
+    fn mutate(&mut self, command: Command) -> Result<()> {
         match command {
             Command::Refresh => {}
             Command::Resize { width, height } => {
                 if self.viewport == (width, height) {
-                    return self.render();
+                    return Ok(());
                 }
                 let anchor = self.position()?;
                 self.viewport = (width, height);
@@ -316,6 +354,7 @@ impl Reader {
                 let step = self.content_height() * LINE_STEP;
                 self.scroll_by(steps * step)?;
             }
+            Command::ScrollTo(fraction) if !fraction.is_finite() => {}
             Command::ScrollTo(fraction) => {
                 let max = self.max_scroll()?;
                 self.cursor.scroll = (fraction.clamp(0.0, 1.0) * max).clamp(0.0, max);
@@ -405,7 +444,7 @@ impl Reader {
             }
             Command::MoveSpotlight(delta) => self.move_spotlight(delta)?,
         }
-        self.render()
+        Ok(())
     }
 
     /// Current position, derived from the first line in view.
@@ -436,27 +475,13 @@ impl Reader {
         let within = self.chapter_fraction();
         let current = self.cursor.chapter;
 
-        let known: Vec<usize> = self.chapter_chars.iter().flatten().copied().collect();
-        if known.is_empty() {
+        let total: f32 = self.chapter_weights.iter().sum();
+        if !total.is_finite() || total <= 0.0 {
             let chapters = self.chapter_count().max(1) as f32;
             return ((current as f32 + within) / chapters).clamp(0.0, 1.0);
         }
-        // Chapters we have not opened yet are assumed to be of average length;
-        // the estimate sharpens as more of the book is parsed.
-        let average = known.iter().sum::<usize>() as f32 / known.len() as f32;
-        let length_of = |chapter: usize| -> f32 {
-            self.chapter_chars
-                .get(chapter)
-                .copied()
-                .flatten()
-                .map_or(average, |chars| chars as f32)
-        };
-
-        let total: f32 = (0..self.chapter_count()).map(length_of).sum();
-        if total <= 0.0 {
-            return 0.0;
-        }
-        let behind: f32 = (0..current).map(length_of).sum::<f32>() + within * length_of(current);
+        let behind: f32 = self.chapter_weights.iter().take(current).sum::<f32>()
+            + within * self.chapter_weights.get(current).copied().unwrap_or(0.0);
         (behind / total).clamp(0.0, 1.0)
     }
 
@@ -488,7 +513,7 @@ impl Reader {
 
     /// Search the whole book, parsing chapters on demand.
     pub fn search(&mut self, query: &str, limit: usize) -> Vec<SearchHit> {
-        let needle = query.trim().to_lowercase();
+        let needle: Vec<char> = query.trim().to_lowercase().chars().collect();
         if needle.is_empty() {
             return Vec::new();
         }
@@ -505,13 +530,12 @@ impl Reader {
                     break;
                 }
                 let text = block.text();
-                let haystack = text.to_lowercase();
-                if let Some(byte_index) = haystack.find(&needle) {
+                if let Some((start, end)) = find_case_insensitive(&text, &needle) {
                     hits.push(SearchHit {
                         position: Position {
                             chapter,
                             block: block_index,
-                            char_offset: text[..byte_index].chars().count(),
+                            char_offset: start,
                         },
                         chapter_label: self
                             .book
@@ -523,7 +547,7 @@ impl Reader {
                             })
                             .map(|item| item.label.clone())
                             .unwrap_or_else(|| format!("Chapter {}", chapter + 1)),
-                        snippet: snippet_around(&text, byte_index, needle.len()),
+                        snippet: snippet_around(&text, start, end),
                     });
                 }
             }
@@ -594,10 +618,11 @@ impl Reader {
     /// Scroll within the chapter, crossing into the next or previous one when
     /// the reader is already at an edge and keeps going.
     fn scroll_by(&mut self, delta: f32) -> Result<()> {
-        if delta == 0.0 {
+        // A non-finite delta would be absorbed by the clamp below and then
+        // poison every later clamp, wedging the reader for the session.
+        if !delta.is_finite() || delta == 0.0 {
             return Ok(());
         }
-        let viewport = self.content_height();
         let max = self.max_scroll()?;
         let at_end = self.cursor.scroll >= max - 0.5;
         let at_start = self.cursor.scroll <= 0.5;
@@ -624,7 +649,6 @@ impl Reader {
             return Ok(());
         }
 
-        let _ = viewport;
         self.cursor.scroll = (self.cursor.scroll + delta).clamp(0.0, max);
         self.spotlight_block = self.first_visible_block();
         Ok(())
@@ -783,18 +807,26 @@ impl Reader {
         let xhtml = self.book.chapter_xhtml(chapter)?;
         let parsed = Arc::new(parse_chapter(&xhtml));
         if let Some(slot) = self.chapter_chars.get_mut(chapter) {
-            *slot = Some(parsed.blocks.iter().map(|block| block.text().len()).sum());
+            // Characters, not bytes: `minutes_left` divides by words, and a
+            // Cyrillic or Greek book would otherwise weigh twice its length.
+            *slot = Some(
+                parsed
+                    .blocks
+                    .iter()
+                    .map(|block| block.text().chars().count())
+                    .sum(),
+            );
         }
         self.chapters.put(chapter, Arc::clone(&parsed));
         Ok(parsed)
     }
 
     fn layout_key(&self, chapter: usize) -> LayoutKey {
+        let (column_width, _, pad) = self.geometry();
         LayoutKey {
             chapter,
-            width: self.viewport.0,
-            height: self.viewport.1,
-            narrowed: self.focus,
+            column_width: column_width.to_bits(),
+            max_block_height: (self.content_height() - 2.0 * pad).to_bits(),
             type_key: self.settings.layout_key(),
         }
     }
@@ -876,7 +908,8 @@ impl Reader {
                     width: decoded.width,
                     height: decoded.height,
                 };
-                if images.len() >= IMAGE_CACHE {
+                let held: usize = images.values().map(|image| image.rgba.len()).sum();
+                if held + decoded.rgba.len() > IMAGE_CACHE_BYTES {
                     images.clear();
                 }
                 images.insert(path, decoded);
@@ -969,10 +1002,15 @@ impl Reader {
 
         // Paint a band taller than the viewport, centred on it, so scrolling
         // can slide pixels rather than ask for new ones.
-        let budget_height = BAND_BYTE_BUDGET / (self.viewport.0.max(1) as f32 * 4.0);
-        let band_height = (viewport * BAND_FACTOR)
-            .min(chapter_height.max(viewport))
-            .min(budget_height.max(viewport));
+        // The band is useless unless it covers the viewport plus a margin at
+        // each end — below that, every scroll repaints, which is the one thing
+        // the band exists to avoid. So the byte budget caps the band but can
+        // never shrink it past that floor: on a 5K display a bigger band is
+        // cheaper than sixty repaints a second.
+        let usable = chapter_height.max(viewport);
+        let floor = (viewport * (1.0 + 2.0 * BAND_MARGIN)).min(usable);
+        let budget_height = (BAND_BYTE_BUDGET / (self.viewport.0.max(1) as f32 * 4.0)).max(floor);
+        let band_height = (viewport * BAND_FACTOR).min(usable).min(budget_height);
         let band_top = (self.cursor.scroll - (band_height - viewport) / 2.0)
             .clamp(0.0, (chapter_height - band_height).max(0.0));
         let frame = BandFrame {
@@ -1101,27 +1139,46 @@ fn char_for_line(layout: &ChapterLayout, block: usize, line: usize) -> usize {
         .unwrap_or(0)
 }
 
-/// A short excerpt around a match, with ellipses where it was cut.
-fn snippet_around(text: &str, byte_index: usize, needle_len: usize) -> String {
+/// Find `needle` (already lowercased, as chars) in `text`, ignoring case, and
+/// return the match as a range of **character** indices.
+///
+/// Case folding is not length-preserving — `'\u{212B}'` (3 bytes) lowercases to
+/// `'å'` (2), `'\u{130}'` (2) to a 3-byte sequence — so searching a lowercased
+/// copy and slicing the original with the offsets it returns lands inside a
+/// character and panics. Walking the original text sidesteps that entirely.
+fn find_case_insensitive(text: &str, needle: &[char]) -> Option<(usize, usize)> {
+    let haystack: Vec<char> = text.chars().collect();
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    for start in 0..=haystack.len() - needle.len() {
+        let matched = haystack[start..start + needle.len()]
+            .iter()
+            .zip(needle)
+            .all(|(found, wanted)| {
+                found == wanted || found.to_lowercase().eq(std::iter::once(*wanted))
+            });
+        if matched {
+            return Some((start, start + needle.len()));
+        }
+    }
+    None
+}
+
+/// A short excerpt around a match, with ellipses where it was cut. `start` and
+/// `end` are character indices.
+fn snippet_around(text: &str, start: usize, end: usize) -> String {
     const CONTEXT: usize = 48;
-    let start = text[..byte_index]
-        .char_indices()
-        .rev()
-        .nth(CONTEXT)
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-    let tail_start = (byte_index + needle_len).min(text.len());
-    let end = text[tail_start..]
-        .char_indices()
-        .nth(CONTEXT)
-        .map(|(i, _)| tail_start + i)
-        .unwrap_or(text.len());
+    let from = start.saturating_sub(CONTEXT);
+    let to = (end + CONTEXT).min(text.chars().count());
+    let excerpt: String = text.chars().skip(from).take(to - from).collect();
+
     let mut snippet = String::new();
-    if start > 0 {
+    if from > 0 {
         snippet.push('…');
     }
-    snippet.push_str(text[start..end].trim());
-    if end < text.len() {
+    snippet.push_str(excerpt.trim());
+    if to < text.chars().count() {
         snippet.push('…');
     }
     snippet

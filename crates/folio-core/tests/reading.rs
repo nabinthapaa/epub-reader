@@ -419,3 +419,27 @@ fn opens_a_real_epub_through_the_rbook_adapter() {
         0
     );
 }
+
+#[test]
+fn search_survives_text_whose_case_folding_changes_its_length() {
+    // 'Å' U+212B lowercases to a shorter string, 'İ' U+0130 to a longer one.
+    // Searching a lowercased copy and slicing the original with its offsets
+    // lands mid-character and panics.
+    let mut reader = reader_with(vec![(
+        "one.xhtml",
+        "<p>\u{212B}ngstr\u{f6}m and \u{130}stanbul — the whale was sighted</p>\
+         <p>\u{2126} and \u{1e9e} before another whale</p>",
+    )]);
+
+    let hits = reader.search("whale", 10);
+    assert_eq!(hits.len(), 2, "both matches found");
+    assert!(hits[0].snippet.contains("whale"));
+
+    // And the recorded position resolves to the right block.
+    let view = reader.apply(Command::GoTo(hits[1].position)).unwrap();
+    assert_eq!(view.chapter, 0);
+
+    // Searching for the awkward characters themselves must not panic either.
+    assert_eq!(reader.search("\u{212B}ngstr\u{f6}m", 5).len(), 1);
+    assert_eq!(reader.search("\u{1e9e}", 5).len(), 1);
+}

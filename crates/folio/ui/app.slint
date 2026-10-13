@@ -300,18 +300,39 @@ export component AppWindow inherits Window {
                         }
 
                         bar := TouchArea {
+                            // The thumb travels between 4px and
+                            // height - 4px - thumb.height, so the inverse has
+                            // to account for the track's inset or the ends are
+                            // unreachable and the thumb never sits under the
+                            // cursor.
+                            property <length> grab: thumb.height / 2;
+                            function fraction-at(pointer: length) -> float {
+                                return clamp((pointer - self.grab - 4px)
+                                    / max(1px, parent.height - 8px - thumb.height), 0.0, 1.0);
+                            }
                             mouse-cursor: default;
                             moved => {
-                                if (self.pressed) {
-                                    root.scroll-to((self.mouse-y - thumb.height / 2)
-                                        / max(1px, parent.height - thumb.height));
-                                }
+                                if (self.pressed) { root.scroll-to(self.fraction-at(self.mouse-y)); }
                             }
                             pointer-event(event) => {
                                 if (event.kind == PointerEventKind.down) {
-                                    root.scroll-to((self.mouse-y - thumb.height / 2)
-                                        / max(1px, parent.height - thumb.height));
+                                    // Grabbing the thumb keeps the offset;
+                                    // clicking the track centres it.
+                                    self.grab = (self.mouse-y >= thumb.y
+                                            && self.mouse-y <= thumb.y + thumb.height)
+                                        ? self.mouse-y - thumb.y
+                                        : thumb.height / 2;
+                                    root.scroll-to(self.fraction-at(self.mouse-y));
                                 }
+                            }
+                            // Without this the right-hand strip swallows the
+                            // wheel instead of scrolling the page.
+                            scroll-event(event) => {
+                                if (event.delta-y != 0) {
+                                    root.scroll-by(-event.delta-y);
+                                    return accept;
+                                }
+                                return reject;
                             }
                         }
                     }

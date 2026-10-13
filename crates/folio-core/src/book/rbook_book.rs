@@ -159,6 +159,14 @@ impl Book for RbookBook {
             .map_err(|e| Error::Ebook(format!("{path}: {e}")))
     }
 
+    fn chapter_bytes(&self, chapter: usize) -> Option<usize> {
+        let path = self.chapters.get(chapter)?;
+        self.epub
+            .read_resource_bytes(format!("/{path}").as_str())
+            .ok()
+            .map(|bytes| bytes.len())
+    }
+
     fn toc(&self) -> &[TocItem] {
         &self.toc
     }

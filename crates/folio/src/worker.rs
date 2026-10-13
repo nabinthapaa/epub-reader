@@ -143,12 +143,33 @@ pub enum Event {
 /// Handle used by the UI thread to talk to the worker.
 pub struct Worker {
     sender: Sender<Job>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Worker {
-    pub fn send(&self, job: Job) {
-        if let Err(error) = self.sender.send(job) {
-            tracing::error!(%error, "render worker is gone");
+    /// Returns false when the worker is no longer listening, which means it
+    /// panicked: the window is still up but nothing will answer it again.
+    pub fn send(&self, job: Job) -> bool {
+        match self.sender.send(job) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::error!(%error, "render worker is gone");
+                false
+            }
+        }
+    }
+
+    /// Ask the worker to stop and wait for it.
+    ///
+    /// Without the join, the process exits while the thread may still be
+    /// holding an unwritten reading position — the one piece of state a reader
+    /// cannot afford to lose.
+    pub fn shutdown(mut self) {
+        let _ = self.sender.send(Job::Shutdown);
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
+            tracing::error!("the render worker panicked before shutting down");
         }
     }
 }
@@ -156,11 +177,14 @@ impl Worker {
 /// Start the worker. `emit` is called from the worker thread for every event.
 pub fn spawn(emit: impl Fn(Event) + Send + 'static) -> Worker {
     let (sender, receiver) = channel();
-    std::thread::Builder::new()
+    let thread = std::thread::Builder::new()
         .name("folio-render".into())
         .spawn(move || run(receiver, emit))
         .expect("failed to start the render worker");
-    Worker { sender }
+    Worker {
+        sender,
+        thread: Some(thread),
+    }
 }
 
 struct State {
@@ -198,7 +222,11 @@ fn run(receiver: Receiver<Job>, emit: impl Fn(Event)) {
                 Err(TryRecvError::Disconnected) => break,
             }
         }
-        let is_last = pending.is_empty();
+        // "Nothing else queued" is the wrong test: a burst ending in a Search
+        // or a CloseBook would apply the scroll and then paint nothing at all.
+        let paints = !pending
+            .iter()
+            .any(|queued| matches!(queued, Job::Apply { .. }));
 
         match job {
             Job::Shutdown => {
@@ -259,19 +287,34 @@ fn run(receiver: Receiver<Job>, emit: impl Fn(Event)) {
                 command,
             } => {
                 let Some(reader) = state.reader.as_mut() else {
+                    // Nothing to apply to, but the UI is waiting on an answer.
+                    emit(Event::Failed {
+                        generation,
+                        message: "no book is open".into(),
+                    });
                     continue;
                 };
+                if !paints {
+                    // A coalesced command moves the cursor but must not paint:
+                    // a band the UI never receives would leave the reader
+                    // believing the window shows pixels it does not have.
+                    if let Err(error) = reader.apply_quietly(command) {
+                        emit(Event::Failed {
+                            generation,
+                            message: error.to_string(),
+                        });
+                    }
+                    continue;
+                }
                 match reader.apply(command) {
                     Ok(view) => {
                         state.dirty_position =
                             Some((reader.book_path().to_string(), view.position, view.progress));
-                        if is_last {
-                            emit(Event::Frame {
-                                generation,
-                                frame: Box::new(Frame::from_view(view)),
-                            });
-                            reader.prefetch_neighbours();
-                        }
+                        emit(Event::Frame {
+                            generation,
+                            frame: Box::new(Frame::from_view(view)),
+                        });
+                        reader.prefetch_neighbours();
                         flush(&mut state, false);
                     }
                     Err(error) => emit(Event::Failed {
@@ -287,6 +330,11 @@ fn run(receiver: Receiver<Job>, emit: impl Fn(Event)) {
             }
             Job::Search { generation, query } => {
                 let Some(reader) = state.reader.as_mut() else {
+                    // Otherwise the panel says "SEARCHING…" forever.
+                    emit(Event::Failed {
+                        generation,
+                        message: "no book is open".into(),
+                    });
                     continue;
                 };
                 let hits = reader.search(&query, 200);

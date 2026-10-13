@@ -53,6 +53,16 @@ pub trait Book: Send + Sync {
     /// The chapter's markup.
     fn chapter_xhtml(&self, chapter: usize) -> Result<String>;
 
+    /// Size of a chapter's resource in bytes, if it can be had cheaply.
+    ///
+    /// Used only as a relative weight for progress, so markup overhead does
+    /// not matter: what matters is that the number never changes while the
+    /// book is open.
+    fn chapter_bytes(&self, chapter: usize) -> Option<usize> {
+        let _ = chapter;
+        None
+    }
+
     fn toc(&self) -> &[TocItem];
 
     /// Raw bytes of any resource, addressed by normalized archive path.

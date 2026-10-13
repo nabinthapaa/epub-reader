@@ -55,7 +55,9 @@ impl Store {
     /// Load settings, falling back to defaults when the file is absent or
     /// unreadable: a corrupt settings file must never stop the app opening.
     pub fn load_settings(&self) -> Settings {
-        read_json(&self.settings_path()).unwrap_or_default()
+        read_json::<Settings>(&self.settings_path())
+            .unwrap_or_default()
+            .sanitize()
     }
 
     pub fn save_settings(&self, settings: &Settings) -> Result<()> {
@@ -69,6 +71,15 @@ impl Store {
         read_json(&self.recents_path()).unwrap_or_default()
     }
 
+    /// Whether the recents file exists but could not be read.
+    ///
+    /// An unreadable shelf must not be overwritten: doing so would throw away
+    /// every saved reading position the moment a format change slipped in.
+    fn recents_are_damaged(&self) -> bool {
+        let path = self.recents_path();
+        path.exists() && read_json::<Vec<RecentBook>>(&path).is_none()
+    }
+
     pub fn save_recents(&self, recents: &[RecentBook]) -> Result<()> {
         write_atomic(
             &self.recents_path(),
@@ -78,6 +89,10 @@ impl Store {
 
     /// Record (or update) a book on the shelf, newest first.
     pub fn touch_recent(&self, entry: RecentBook) -> Result<Vec<RecentBook>> {
+        if self.recents_are_damaged() {
+            tracing::warn!("recents file is unreadable; leaving it alone");
+            return Ok(vec![entry]);
+        }
         let mut recents = self.load_recents();
         recents.retain(|r| r.path != entry.path);
         recents.insert(0, entry);
@@ -93,6 +108,9 @@ impl Store {
         position: Position,
         progress: f32,
     ) -> Result<()> {
+        if self.recents_are_damaged() {
+            return Ok(());
+        }
         let mut recents = self.load_recents();
         if let Some(entry) = recents.iter_mut().find(|r| r.path == book_path) {
             entry.position = position;

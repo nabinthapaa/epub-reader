@@ -75,10 +75,14 @@ impl App {
             return;
         }
         let generation = self.next_generation();
-        self.worker.send(Job::Apply {
+        if !self.worker.send(Job::Apply {
             generation,
             command,
-        });
+        }) {
+            // The worker died; without saying so the window just stops
+            // responding to every key with no explanation.
+            self.notice("The renderer stopped — see the log");
+        }
     }
 
     fn open(&self, path: PathBuf) {
@@ -100,9 +104,14 @@ impl App {
             return;
         }
         self.has_book.set(false);
+        // Frames of the book being closed must not land on the shelf.
+        self.book_generation.set(self.next_generation());
         self.worker.send(Job::CloseBook);
         if let Some(ui) = self.ui.upgrade() {
             ui.set_has_book(false);
+            // Dropping the transition timer stops the animation without
+            // settling it; the next book would open dimmed and offset.
+            ui.set_enter_progress(1.0);
             ui.set_book_title("Folio".into());
             ui.set_book_author("".into());
             ui.set_search_open(false);
@@ -227,7 +236,11 @@ impl App {
             .as_ref()
             .map(|frame| frame.viewport_height)
             .unwrap_or(self.viewport.get().1 as f32);
-        let snap = snap || (target - self.scroll_visual.get()).abs() > viewport;
+        // Easing further than the band's pre-roll would slide the painted
+        // pixels off the top of the window and show bare page for a few frames.
+        let snap = snap
+            || (target - self.scroll_visual.get()).abs()
+                > viewport * folio_core::reader::EASE_LIMIT_FRACTION;
         self.scroll_target.set(target);
         if snap {
             self.scroll_visual.set(target);
@@ -423,7 +436,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.run()?;
     app.save_settings();
-    app.worker.send(Job::Shutdown);
+    // Wait for the worker: it may still be holding an unwritten position.
+    if let Ok(app) = Rc::try_unwrap(app) {
+        app.worker.shutdown();
+    }
     Ok(())
 }
 
@@ -668,6 +684,7 @@ fn wire_callbacks(ui: &AppWindow, app: &Rc<App>) {
         app.worker.send(Job::Flush);
         let _ = slint::quit_event_loop();
     });
+    // (the event loop returning is what joins the worker, in main)
 }
 
 fn handle_event(app: &Rc<App>, event: Event) {

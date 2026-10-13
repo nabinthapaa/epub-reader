@@ -82,6 +82,10 @@ impl Book for FakeBook {
             .ok_or(Error::NoSuchChapter(chapter))
     }
 
+    fn chapter_bytes(&self, chapter: usize) -> Option<usize> {
+        self.chapters.get(chapter).map(|(_, xhtml)| xhtml.len())
+    }
+
     fn toc(&self) -> &[TocItem] {
         &self.toc
     }

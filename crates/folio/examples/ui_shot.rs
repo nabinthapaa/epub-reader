@@ -98,7 +98,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .and_then(|store| store.load_recents().first().map(|b| PathBuf::from(&b.path)))
             })
             .ok_or("no book to render: pass one as the last argument")?;
-        load_book(&ui, &path, theme, (width - panel, height), focus)?;
+        load_book(
+            &ui,
+            &path,
+            theme,
+            (width.saturating_sub(panel).max(200), height),
+            focus,
+        )?;
     }
 
     match scene.as_str() {

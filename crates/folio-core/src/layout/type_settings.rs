@@ -19,7 +19,14 @@ pub enum Alignment {
 }
 
 /// Everything that affects where a glyph lands.
+///
+/// `#[serde(default)]` matters here: `Settings` flattens this struct, and a
+/// container default on the outer type does not cover a flattened field.
+/// Without it, adding one field would make every settings file written by an
+/// earlier version fail to parse, and the reader would silently reset the
+/// theme, the window size and everything else alongside it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TypeSettings {
     /// Base font size in px; headings scale off this.
     pub font_px: f32,

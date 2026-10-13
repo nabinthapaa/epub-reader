@@ -104,8 +104,11 @@ pub fn render_band(
         }
 
         if let Some(image) = &block.image {
-            if image.available {
-                draw_image(&mut canvas, image, x, y, layout.column_width, images, dim);
+            // The pixels can be evicted after the layout was built, so
+            // "available" is a claim about layout time, not about now.
+            let painted = image.available
+                && draw_image(&mut canvas, image, x, y, layout.column_width, images, dim);
+            if painted {
                 continue;
             }
             // Unavailable: frame the space, then fall through to the alt text.
@@ -211,6 +214,8 @@ fn push_link_region(
     });
 }
 
+/// Returns false when the pixels are no longer in the cache, so the caller can
+/// fall back to the dashed frame instead of leaving a hole the size of a figure.
 fn draw_image(
     canvas: &mut Canvas,
     image: &super::engine::ImageBox,
@@ -219,24 +224,25 @@ fn draw_image(
     column_width: f32,
     images: &HashMap<String, DecodedImage>,
     dim: f32,
-) {
+) -> bool {
     let Some(decoded) = images.get(&image.path) else {
-        return;
+        return false;
     };
     let width = image.width.round().max(1.0) as u32;
     let height = image.height.round().max(1.0) as u32;
     let Some(pixels) = decoded.resized(width, height) else {
-        return;
+        return false;
     };
     // Center the image in the column.
     let offset = ((column_width - image.width) / 2.0).max(0.0);
     if dim >= 1.0 {
         canvas.draw_rgba(x + offset, y, width, height, &pixels);
-        return;
+        return true;
     }
     let faded: Vec<u8> = pixels
         .chunks_exact(4)
         .flat_map(|p| [p[0], p[1], p[2], (p[3] as f32 * dim) as u8])
         .collect();
     canvas.draw_rgba(x + offset, y, width, height, &faded);
+    true
 }

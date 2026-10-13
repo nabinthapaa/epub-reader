@@ -103,7 +103,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // The band is taller than the window; crop the part that would be visible.
-    let band = view.band.expect("the first frame always paints a band");
+    // A frame carries no band when the one already on screen still covers the
+    // viewport, which is the normal case for a small scroll — so ask for a
+    // repaint rather than asserting.
+    let view = match view.band {
+        Some(_) => view,
+        // A theme change always repaints, and this one changes nothing.
+        None => reader.apply(Command::SetTheme(Theme::new(preset)))?,
+    };
+    let band = view.band.expect("a theme change repaints");
     let offset = ((view.scroll - view.band_top).max(0.0)).round() as u32;
     let height = (view.viewport_height.round() as u32).min(band.height.saturating_sub(offset));
     let start = (offset * band.width * 4) as usize;

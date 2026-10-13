@@ -43,6 +43,37 @@ pub struct Settings {
     pub window_height: u32,
 }
 
+impl Settings {
+    /// Clamp anything that came off disk into a range the layout engine can
+    /// actually use. cosmic-text asserts on a zero line height, and that
+    /// assert runs on the render thread, where a panic freezes the window.
+    pub fn sanitize(mut self) -> Self {
+        let type_settings = &mut self.type_settings;
+        if !type_settings.font_px.is_finite() {
+            type_settings.font_px = TypeSettings::default().font_px;
+        }
+        if !type_settings.line_height.is_finite() {
+            type_settings.line_height = TypeSettings::default().line_height;
+        }
+        if !type_settings.measure_ch.is_finite() {
+            type_settings.measure_ch = TypeSettings::default().measure_ch;
+        }
+        if !type_settings.margin_px.is_finite() {
+            type_settings.margin_px = TypeSettings::default().margin_px;
+        }
+        type_settings.font_px = type_settings.font_px.clamp(
+            crate::layout::ZOOM_STEPS[0],
+            crate::layout::ZOOM_STEPS[crate::layout::ZOOM_STEPS.len() - 1],
+        );
+        type_settings.line_height = type_settings.line_height.clamp(1.0, 2.5);
+        type_settings.measure_ch = type_settings.measure_ch.clamp(40.0, 110.0);
+        type_settings.margin_px = type_settings.margin_px.clamp(0.0, 200.0);
+        self.window_width = self.window_width.clamp(400, 16_384);
+        self.window_height = self.window_height.clamp(300, 16_384);
+        self
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -58,6 +89,7 @@ impl Default for Settings {
 
 /// One entry on the recents shelf.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RecentBook {
     pub path: String,
     pub title: String,
@@ -69,6 +101,20 @@ pub struct RecentBook {
     pub cover: Option<String>,
     /// Seconds since the Unix epoch.
     pub opened_at: u64,
+}
+
+impl Default for RecentBook {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            title: String::new(),
+            author: String::new(),
+            position: Position::default(),
+            progress: 0.0,
+            cover: None,
+            opened_at: 0,
+        }
+    }
 }
 
 impl RecentBook {
