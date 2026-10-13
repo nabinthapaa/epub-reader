@@ -65,6 +65,7 @@ pub struct Frame {
     pub toc_index: Option<usize>,
     pub progress: f32,
     pub chapter_progress: f32,
+    pub minutes_left: Option<u32>,
     pub transition: Option<Transition>,
     pub focus: bool,
     pub spotlight: bool,
@@ -97,6 +98,7 @@ impl Frame {
             toc_index: view.toc_index,
             progress: view.progress,
             chapter_progress: view.chapter_progress,
+            minutes_left: view.minutes_left,
             transition: view.transition,
             focus: view.focus,
             spotlight: view.spotlight,
@@ -111,6 +113,7 @@ pub enum Event {
     Opened {
         generation: u64,
         title: String,
+        author: String,
         toc: Vec<TocItem>,
         recents: Vec<RecentBook>,
     },
@@ -224,10 +227,11 @@ fn run(receiver: Receiver<Job>, emit: impl Fn(Event)) {
             } => {
                 flush(&mut state, true);
                 match open_book(&mut state, &path, &settings, theme, viewport) {
-                    Ok((view, title, toc, recents)) => {
+                    Ok((view, title, author, toc, recents)) => {
                         emit(Event::Opened {
                             generation,
                             title,
+                            author,
                             toc,
                             recents,
                         });
@@ -307,7 +311,7 @@ fn families(state: &mut State) -> Vec<String> {
     families
 }
 
-type OpenResult = Result<(View, String, Vec<TocItem>, Vec<RecentBook>), String>;
+type OpenResult = Result<(View, String, String, Vec<TocItem>, Vec<RecentBook>), String>;
 
 fn open_book(
     state: &mut State,
@@ -328,7 +332,8 @@ fn open_book(
         .apply(Command::SetTheme(theme))
         .map_err(|error| error.to_string())?;
 
-    let title = reader.meta().display_line();
+    let title = reader.meta().title.clone();
+    let author = reader.meta().authors.first().cloned().unwrap_or_default();
     let toc = reader.toc().to_vec();
 
     let mut recents = Vec::new();
@@ -353,7 +358,7 @@ fn open_book(
     }
 
     state.reader = Some(reader);
-    Ok((view, title, toc, recents))
+    Ok((view, title, author, toc, recents))
 }
 
 /// Write the pending reading position, honoring the debounce unless forced.

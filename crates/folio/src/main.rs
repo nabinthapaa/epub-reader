@@ -104,6 +104,7 @@ impl App {
         if let Some(ui) = self.ui.upgrade() {
             ui.set_has_book(false);
             ui.set_book_title("Folio".into());
+            ui.set_book_author("".into());
             ui.set_search_open(false);
             ui.set_settings_open(false);
             ui.set_can_go_back(false);
@@ -310,6 +311,7 @@ impl App {
         if let Some(band) = &frame.band {
             ui.set_band_image(bridge::image_from_rgba(&band.rgba, band.width, band.height));
             ui.set_band_height(band.height as f32 / scale);
+            ui.set_band_width(band.width as f32 / scale);
         }
         if let Some(links) = &frame.links {
             *self.links.borrow_mut() = links.clone();
@@ -321,6 +323,7 @@ impl App {
         );
         ui.set_progress(frame.progress);
         ui.set_chapter_progress(frame.chapter_progress);
+        ui.set_minutes_left(frame.minutes_left.unwrap_or(0) as i32);
         ui.set_chapter_label(frame.chapter_label.as_str().into());
         ui.set_focus_mode(frame.focus);
         ui.set_spotlight(frame.spotlight);
@@ -490,12 +493,31 @@ fn wire_callbacks(ui: &AppWindow, app: &Rc<App>) {
             .as_ref()
             .map(|frame| frame.focus)
             .unwrap_or(false);
+        if !focus {
+            // Focus mode hides every control, including any hint of how to
+            // leave it.
+            app.notice("Focus mode — press Esc or f to leave");
+        }
         app.command(Command::SetFocus(!focus));
     });
     on!(on_toggle_spotlight, |app: Rc<App>| move || {
         let spotlight = !app.settings.borrow().spotlight;
         app.settings.borrow_mut().spotlight = spotlight;
         app.command(Command::SetSpotlight(spotlight));
+        let focused = app
+            .frame
+            .borrow()
+            .as_ref()
+            .map(|frame| frame.focus)
+            .unwrap_or(false);
+        // The spotlight only draws in focus mode, so toggling it while reading
+        // normally changed nothing visible and looked broken.
+        if spotlight && !focused {
+            app.command(Command::SetFocus(true));
+            app.notice("Spotlight on — press Esc or f to leave focus mode");
+        } else if !spotlight {
+            app.notice("Spotlight off");
+        }
         app.save_settings();
     });
     on!(on_move_spotlight, |app: Rc<App>| move |delta: i32| {
@@ -664,6 +686,7 @@ fn handle_event(app: &Rc<App>, event: Event) {
     match event {
         Event::Opened {
             title,
+            author,
             toc,
             recents,
             ..
@@ -673,6 +696,7 @@ fn handle_event(app: &Rc<App>, event: Event) {
             app.has_book.set(true);
             if let Some(ui) = app.ui.upgrade() {
                 ui.set_book_title(title.as_str().into());
+                ui.set_book_author(author.as_str().into());
                 ui.set_has_book(true);
                 if let Some(store) = &app.store {
                     ui.set_shelf(bridge::shelf_rows(&recents, &store.covers_dir()));

@@ -1,24 +1,30 @@
 import { Tokens, ToolButton } from "tokens.slint";
 
-// The top bar: navigation, view controls, and the book's title.
+// The top bar: navigation on the left, view controls on the right, and the
+// book's title centred on the window between them.
+//
+// The title is positioned on the Rectangle rather than placed in the layout:
+// inside the layout it centres within the leftover space, and since the right
+// cluster is three times the width of the left one, "centred" lands visibly
+// off-centre.
 export component Toolbar inherits Rectangle {
     in property <Tokens> tokens;
     in property <string> title;
+    in property <string> author;
     in property <bool> toc-open;
     in property <bool> search-open;
+    in property <bool> settings-open;
     in property <bool> has-book;
     in property <bool> can-go-back;
     in property <int> font-px;
-    in property <string> theme-label;
 
     callback toggle-toc();
     callback toggle-search();
+    callback toggle-settings();
     callback open-file();
-    callback cycle-theme();
     callback zoom(int);
     callback zoom-reset();
     callback toggle-focus();
-    callback toggle-settings();
     callback close-book();
     callback back();
 
@@ -31,16 +37,44 @@ export component Toolbar inherits Rectangle {
         background: tokens.border;
     }
 
+    if has-book: HorizontalLayout {
+        x: (parent.width - self.preferred-width) / 2;
+        width: min(self.preferred-width, parent.width - 620px);
+        height: parent.height;
+        spacing: 0px;
+
+        Text {
+            text: title;
+            color: tokens.text;
+            font-size: 13px;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Text {
+            text: author != "" ? "  —  " + author : "";
+            color: tokens.muted;
+            font-size: 13px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
     HorizontalLayout {
         padding-left: 8px;
         padding-right: 8px;
+        // Without vertical padding the layout stretches each chip to the full
+        // toolbar height, which clips its corners and turns the active state
+        // into a slab of colour.
+        padding-top: 8px;
+        padding-bottom: 8px;
         spacing: 4px;
 
         ToolButton {
             tokens: tokens;
-            text: "☰";
+            text: "Contents";
             active: toc-open;
-            enabled: has-book;
+            visible: has-book;
             clicked => { toggle-toc(); }
         }
         ToolButton {
@@ -56,65 +90,58 @@ export component Toolbar inherits Rectangle {
             clicked => { back(); }
         }
 
-        Rectangle {
-            horizontal-stretch: 1;
-            min-width: 40px;
-            Text {
-                text: title;
-                color: tokens.text;
-                font-size: 13px;
-                font-weight: 600;
-                overflow: elide;
-                vertical-alignment: center;
-                horizontal-alignment: center;
-                width: parent.width;
+        // The gap the title is centred over.
+        Rectangle { horizontal-stretch: 1; min-width: 40px; }
+
+        ToolButton {
+            tokens: tokens;
+            text: "Find";
+            active: search-open;
+            visible: has-book;
+            clicked => { toggle-search(); }
+        }
+
+        // One zoom control, not three floating chips. The middle is the reset.
+        if has-book: Rectangle {
+            width: zoom-row.preferred-width;
+            border-radius: 6px;
+            background: tokens.text.with-alpha(0.05);
+            zoom-row := HorizontalLayout {
+                spacing: 0px;
+                ToolButton {
+                    tokens: tokens;
+                    text: "A−";
+                    clicked => { zoom(-1); }
+                }
+                ToolButton {
+                    tokens: tokens;
+                    text: font-px + "px";
+                    clicked => { zoom-reset(); }
+                }
+                ToolButton {
+                    tokens: tokens;
+                    text: "A+";
+                    clicked => { zoom(1); }
+                }
             }
         }
 
         ToolButton {
             tokens: tokens;
-            text: "🔍";
-            active: search-open;
-            enabled: has-book;
-            clicked => { toggle-search(); }
-        }
-        ToolButton {
-            tokens: tokens;
-            text: "A−";
-            enabled: has-book;
-            clicked => { zoom(-1); }
-        }
-        ToolButton {
-            tokens: tokens;
-            text: font-px + "px";
-            enabled: has-book;
-            clicked => { zoom-reset(); }
-        }
-        ToolButton {
-            tokens: tokens;
-            text: "A+";
-            enabled: has-book;
-            clicked => { zoom(1); }
-        }
-        ToolButton {
-            tokens: tokens;
-            text: theme-label;
-            clicked => { cycle-theme(); }
-        }
-        ToolButton {
-            tokens: tokens;
             text: "Focus";
-            enabled: has-book;
+            visible: has-book;
             clicked => { toggle-focus(); }
         }
         ToolButton {
             tokens: tokens;
-            text: "⚙";
+            text: "Settings";
+            active: settings-open;
             clicked => { toggle-settings(); }
         }
         ToolButton {
             tokens: tokens;
             text: "Open";
+            visible: !has-book;
             clicked => { open-file(); }
         }
     }

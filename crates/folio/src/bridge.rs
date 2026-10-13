@@ -60,7 +60,13 @@ pub fn shelf_rows(recents: &[RecentBook], covers_dir: &Path) -> ModelRc<ShelfRow
         .enumerate()
         .map(|(index, book)| ShelfRow {
             title: SharedString::from(book.title.as_str()),
-            author: SharedString::from(book.author.as_str()),
+            // "Unknown" is what some EPUBs literally put in the creator field;
+            // showing nothing is more honest than showing that.
+            author: SharedString::from(if book.author.eq_ignore_ascii_case("unknown") {
+                ""
+            } else {
+                book.author.as_str()
+            }),
             progress: book.progress_percent() as i32,
             cover: book
                 .cover

@@ -60,7 +60,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .enumerate()
             .map(|(index, book)| ShelfRow {
                 title: book.title.as_str().into(),
-                author: book.author.as_str().into(),
+                author: if book.author.eq_ignore_ascii_case("unknown") {
+                    SharedString::new()
+                } else {
+                    book.author.as_str().into()
+                },
                 progress: book.progress_percent() as i32,
                 cover: book
                     .cover
@@ -76,6 +80,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if scene != "shelf" {
+        // Panels inset the reading area, so render the band at the width it
+        // will actually be shown at — otherwise the shot lies about the measure.
+        let panel = match scene.as_str() {
+            "toc" => 260,
+            "search" => 300,
+            _ => 0,
+        };
         let path = book
             .or_else(|| {
                 Store::new()
@@ -83,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .and_then(|store| store.load_recents().first().map(|b| PathBuf::from(&b.path)))
             })
             .ok_or("no book to render: pass one as the last argument")?;
-        load_book(&ui, &path, theme, (width, height))?;
+        load_book(&ui, &path, theme, (width - panel, height))?;
     }
 
     match scene.as_str() {
@@ -142,12 +153,30 @@ fn load_book(
     reader.apply(Command::SetTheme(theme))?;
     // A few screens in, so the shot shows prose rather than a title page.
     let view = reader.apply(Command::ScrollScreens(4.0))?;
+    println!(
+        "body family: {} · font_px {} · column from viewport {}x{}",
+        reader.body_family(),
+        view.font_px,
+        viewport.0,
+        viewport.1
+    );
 
     ui.set_has_book(true);
-    ui.set_book_title(reader.meta().display_line().as_str().into());
+    ui.set_book_title(reader.meta().title.as_str().into());
+    ui.set_book_author(
+        reader
+            .meta()
+            .authors
+            .first()
+            .cloned()
+            .unwrap_or_default()
+            .as_str()
+            .into(),
+    );
     ui.set_chapter_label(view.chapter_label.as_str().into());
     ui.set_progress(view.progress);
     ui.set_chapter_progress(view.chapter_progress);
+    ui.set_minutes_left(view.minutes_left.unwrap_or(0) as i32);
     ui.set_font_px(view.font_px.round() as i32);
     ui.set_scroll(view.scroll);
     ui.set_band_top(view.band_top);
@@ -162,6 +191,7 @@ fn load_book(
         buffer.make_mut_bytes().copy_from_slice(&band.rgba);
         ui.set_band_image(slint::Image::from_rgba8(buffer));
         ui.set_band_height(band.height as f32);
+        ui.set_band_width(band.width as f32);
     }
 
     let rows: Vec<TocRow> = reader

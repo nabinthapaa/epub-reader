@@ -138,15 +138,19 @@ impl Theme {
             },
             ThemePreset::Dark => Self {
                 preset,
-                page: Color::rgb(0x16, 0x17, 0x19),
-                surface: Color::rgb(0x1E, 0x20, 0x23),
-                text: Color::rgb(0xDC, 0xDA, 0xD4),
+                // Prose at ~9.8:1 rather than ~12.9:1: bright enough to read,
+                // dim enough not to halate over an hour. Surface and border are
+                // lifted so the chrome separates from the page by more than a
+                // hairline.
+                page: Color::rgb(0x1A, 0x1C, 0x1F),
+                surface: Color::rgb(0x24, 0x26, 0x2A),
+                text: Color::rgb(0xCD, 0xCA, 0xC3),
                 muted: Color::rgb(0x8C, 0x8C, 0x88),
                 accent: Color::rgb(0x8A, 0xB4, 0xDE),
                 link: Color::rgb(0x8A, 0xB4, 0xDE),
                 selection: Color::rgba(0x8A, 0xB4, 0xDE, 0x40),
-                border: Color::rgb(0x2C, 0x2F, 0x33),
-                dim_factor: 0.32,
+                border: Color::rgb(0x38, 0x3C, 0x42),
+                dim_factor: 0.34,
             },
         }
     }

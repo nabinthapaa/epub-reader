@@ -1,4 +1,4 @@
-import { Tokens, TocRow, SearchRow, ShelfRow } from "tokens.slint";
+import { Tokens, Shortcuts, TocRow, SearchRow, ShelfRow } from "tokens.slint";
 import { Palette } from "std-widgets.slint";
 import { Toolbar } from "toolbar.slint";
 import { TocPanel, SearchPanel, Shelf, SettingsPanel } from "panels.slint";
@@ -13,6 +13,10 @@ export component AppWindow inherits Window {
     in property <image> band-image;
     in property <length> band-top;
     in property <length> band-height;
+    /// The band's own width. Keeping the image at its natural size means a band
+    /// that has not caught up with a resize is merely off-centre for a frame,
+    /// rather than horizontally squashed.
+    in property <length> band-width;
     /// Eased scroll offset, driven from Rust.
     in property <length> scroll;
     in property <length> chapter-height;
@@ -32,6 +36,9 @@ export component AppWindow inherits Window {
     in property <bool> focus-mode;
     in property <bool> spotlight;
     in property <string> theme-label: "Light";
+    in property <string> book-author;
+    /// Rough minutes left in the chapter; 0 means "not worth saying".
+    in property <int> minutes-left;
     in property <[TocRow]> toc;
     in property <[SearchRow]> search-results;
     in property <[ShelfRow]> shelf;
@@ -49,6 +56,7 @@ export component AppWindow inherits Window {
     in-out property <bool> toc-open;
     in-out property <bool> search-open;
     in-out property <bool> settings-open;
+    in-out property <bool> shortcuts-open;
 
     // --- requests sent to Rust ---
     callback scroll-by(length);
@@ -95,6 +103,7 @@ export component AppWindow inherits Window {
             if (event.text == Key.Escape) {
                 // Back out one layer at a time, innermost first, ending at the
                 // shelf: there has to be a way home from a book.
+                if (shortcuts-open) { shortcuts-open = false; return accept; }
                 if (settings-open) { settings-open = false; return accept; }
                 if (search-open) { search-open = false; return accept; }
                 if (focus-mode) { toggle-focus(); return accept; }
@@ -102,6 +111,8 @@ export component AppWindow inherits Window {
                 if (has-book) { close-book(); return accept; }
                 return accept;
             }
+            if (event.text == "?") { shortcuts-open = !shortcuts-open; return accept; }
+            if (shortcuts-open) { shortcuts-open = false; return accept; }
             if (!has-book) {
                 if (event.text == "o" && event.modifiers.control) { open-file(); return accept; }
                 return reject;
@@ -113,7 +124,11 @@ export component AppWindow inherits Window {
                 if (event.text == "o") { open-file(); return accept; }
                 if (event.text == "t") { toc-open = !toc-open; return accept; }
                 if (event.text == ",") { settings-open = !settings-open; return accept; }
-                if (event.text == "f") { search-open = !search-open; return accept; }
+                if (event.text == "f") {
+                    search-open = !search-open;
+                    if (search-open) { search-panel.focus-field(); }
+                    return accept;
+                }
                 if (event.text == "q") { quit(); return accept; }
                 if (event.text == "w") { close-book(); return accept; }
                 return reject;
@@ -140,7 +155,11 @@ export component AppWindow inherits Window {
             if (event.text == "s") { toggle-spotlight(); return accept; }
             if (event.text == "t") { cycle-theme(); return accept; }
             if (event.text == "c") { toc-open = !toc-open; return accept; }
-            if (event.text == "/") { search-open = true; return accept; }
+            if (event.text == "/") {
+                search-open = true;
+                search-panel.focus-field();
+                return accept;
+            }
             if (event.text == "n") { jump-chapter(1); return accept; }
             if (event.text == "p") { jump-chapter(-1); return accept; }
             return reject;
@@ -151,17 +170,20 @@ export component AppWindow inherits Window {
                 visible: !focus-mode;
                 height: focus-mode ? 0px : 46px;
                 tokens: tokens;
-                title: has-book ? book-title : "Folio";
+                title: book-title;
+                author: book-author;
                 toc-open: toc-open;
                 search-open: search-open;
+                settings-open: settings-open;
                 has-book: has-book;
                 can-go-back: can-go-back;
                 font-px: font-px;
-                theme-label: theme-label;
                 toggle-toc => { toc-open = !toc-open; keys.focus(); }
-                toggle-search => { search-open = !search-open; }
+                toggle-search => {
+                    search-open = !search-open;
+                    if (search-open) { search-panel.focus-field(); }
+                }
                 open-file => { root.open-file(); }
-                cycle-theme => { root.cycle-theme(); }
                 zoom(step) => { root.zoom(step); }
                 zoom-reset => { root.zoom-reset(); }
                 toggle-focus => { root.toggle-focus(); keys.focus(); }
@@ -189,7 +211,8 @@ export component AppWindow inherits Window {
 
                     if has-book: Image {
                         source: band-image;
-                        width: parent.width;
+                        width: root.band-width > 0 ? root.band-width : parent.width;
+                        x: (parent.width - self.width) / 2;
                         height: root.band-height;
                         // Chapter space -> viewport space, plus the small
                         // offset a chapter transition slides in from.
@@ -241,17 +264,38 @@ export component AppWindow inherits Window {
                         animate opacity { duration: 160ms; }
                     }
 
+                    // Lines are cut by the viewport edges; fading them says
+                    // "there is more" instead of looking like clipping damage.
+                    if has-book: Rectangle {
+                        y: 0;
+                        height: 20px;
+                        background: @linear-gradient(180deg,
+                            tokens.page 0%, tokens.page.with-alpha(0.0) 100%);
+                    }
+                    if has-book: Rectangle {
+                        y: parent.height - 28px;
+                        height: 28px;
+                        background: @linear-gradient(180deg,
+                            tokens.page.with-alpha(0.0) 0%, tokens.page 100%);
+                    }
+
                     // In focus mode the only chrome left is a hairline of progress.
                     if focus-mode: Rectangle {
                         y: parent.height - 2px;
                         x: 0;
-                        width: parent.width * progress;
+                        width: parent.width;
                         height: 2px;
-                        background: tokens.accent.with-alpha(0.55);
+                        background: tokens.text.with-alpha(0.07);
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * progress;
+                            height: parent.height;
+                            background: tokens.muted.with-alpha(0.5);
+                        }
                     }
                 }
 
-                SearchPanel {
+                search-panel := SearchPanel {
                     visible: search-open && !focus-mode && has-book;
                     width: (search-open && !focus-mode && has-book) ? 300px : 0px;
                     tokens: tokens;
@@ -259,6 +303,7 @@ export component AppWindow inherits Window {
                     searching: searching;
                     run(query) => { run-search(query); }
                     activate(index) => { goto-search(index); keys.focus(); }
+                    dismissed => { search-open = false; keys.focus(); }
                 }
             }
 
@@ -287,7 +332,9 @@ export component AppWindow inherits Window {
                         horizontal-stretch: 1;
                     }
                     Text {
-                        text: Math.round(chapter-progress * 100) + "% of chapter";
+                        // What a reader actually wants to know. The scrollbar
+                        // already shows position within the chapter.
+                        text: minutes-left > 0 ? "~" + minutes-left + " min left" : "";
                         color: tokens.muted;
                         font-size: 11px;
                         vertical-alignment: center;
@@ -318,9 +365,13 @@ export component AppWindow inherits Window {
             }
         }
 
-        if settings-open && !focus-mode: TouchArea {
-            // Clicking away dismisses the panel.
-            clicked => { settings-open = false; keys.focus(); }
+        if settings-open && !focus-mode: Rectangle {
+            // A visible scrim: the popover sits over live prose, so it has to
+            // read as "above" rather than as a rendering artifact.
+            background: #000000.with-alpha(0.3);
+            TouchArea {
+                clicked => { settings-open = false; keys.focus(); }
+            }
         }
 
         if settings-open && !focus-mode: SettingsPanel {
@@ -343,10 +394,17 @@ export component AppWindow inherits Window {
             dismiss => { settings-open = false; }
         }
 
+        if shortcuts-open: Shortcuts {
+            width: parent.width;
+            height: parent.height;
+            tokens: tokens;
+            dismiss => { shortcuts-open = false; keys.focus(); }
+        }
+
         // Transient message (open errors, saved state, and the like).
         if notice != "": Rectangle {
             x: (parent.width - self.width) / 2;
-            y: parent.height - self.height - 24px;
+            y: parent.height - self.height - (has-book && !focus-mode ? 44px : 24px);
             width: notice-text.preferred-width + 28px;
             height: 34px;
             border-radius: 17px;

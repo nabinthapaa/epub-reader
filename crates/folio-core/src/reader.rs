@@ -122,6 +122,8 @@ pub struct View {
     pub progress: f32,
     /// Fraction of the current chapter above the viewport.
     pub chapter_progress: f32,
+    /// Rough minutes of reading left in this chapter, when it is worth saying.
+    pub minutes_left: Option<u32>,
     /// Set when this frame begins a new chapter.
     pub transition: Option<Transition>,
     pub focus: bool,
@@ -181,6 +183,10 @@ pub struct Reader {
     images: HashMap<String, DecodedImage>,
     band: Option<Band>,
     pending_transition: Option<Transition>,
+    /// Characters per chapter, filled in as chapters are parsed. Progress over
+    /// a whole book is meaningless when it counts spine entries: in most EPUBs
+    /// a title page and a forty-page chapter each count once.
+    chapter_chars: Vec<Option<usize>>,
 }
 
 impl Reader {
@@ -245,6 +251,7 @@ impl Reader {
             images: HashMap::new(),
             band: None,
             pending_transition: None,
+            chapter_chars: vec![None; chapter_count],
         };
         reader.go_to(start)?;
         Ok(reader)
@@ -416,11 +423,47 @@ impl Reader {
         })
     }
 
-    /// Fraction of the book behind the current viewport.
+    /// Fraction of the book behind the current viewport, weighted by how long
+    /// each chapter is rather than by how many there are.
     pub fn progress(&mut self) -> f32 {
-        let chapters = self.chapter_count().max(1) as f32;
         let within = self.chapter_fraction();
-        ((self.cursor.chapter as f32 + within) / chapters).clamp(0.0, 1.0)
+        let current = self.cursor.chapter;
+
+        let known: Vec<usize> = self.chapter_chars.iter().flatten().copied().collect();
+        if known.is_empty() {
+            let chapters = self.chapter_count().max(1) as f32;
+            return ((current as f32 + within) / chapters).clamp(0.0, 1.0);
+        }
+        // Chapters we have not opened yet are assumed to be of average length;
+        // the estimate sharpens as more of the book is parsed.
+        let average = known.iter().sum::<usize>() as f32 / known.len() as f32;
+        let length_of = |chapter: usize| -> f32 {
+            self.chapter_chars
+                .get(chapter)
+                .copied()
+                .flatten()
+                .map_or(average, |chars| chars as f32)
+        };
+
+        let total: f32 = (0..self.chapter_count()).map(length_of).sum();
+        if total <= 0.0 {
+            return 0.0;
+        }
+        let behind: f32 = (0..current).map(length_of).sum::<f32>() + within * length_of(current);
+        (behind / total).clamp(0.0, 1.0)
+    }
+
+    /// Minutes of reading left in the current chapter at ~250 words a minute,
+    /// or `None` when it is less than a minute and not worth saying.
+    pub fn minutes_left(&mut self) -> Option<u32> {
+        let remaining = 1.0 - self.chapter_fraction();
+        let chars = self
+            .chapter_chars
+            .get(self.cursor.chapter)
+            .copied()
+            .flatten()?;
+        let minutes = (chars as f32 * remaining / 5.0 / 250.0).round() as u32;
+        (minutes >= 1).then_some(minutes)
     }
 
     /// How far through the current chapter the viewport is.
@@ -514,7 +557,14 @@ impl Reader {
                 best = Some((index, block));
             }
         }
-        best.map(|(index, _)| index).or(fallback)
+        // Front matter matches no entry at all; pointing at the first one is
+        // better than leaving the panel with no "you are here" whatsoever.
+        best.map(|(index, _)| index).or(fallback).or_else(|| {
+            self.book
+                .toc()
+                .iter()
+                .position(|item| !item.label.trim().is_empty())
+        })
     }
 
     /// Human-readable label for what is on screen.
@@ -523,7 +573,13 @@ impl Reader {
         self.active_toc()
             .and_then(|index| self.book.toc().get(index))
             .map(|item| item.label.clone())
-            .unwrap_or_else(|| format!("Chapter {}", chapter + 1))
+            .unwrap_or_else(|| {
+                if chapter == 0 {
+                    self.book.meta().title.clone()
+                } else {
+                    format!("Chapter {}", chapter + 1)
+                }
+            })
     }
 
     // --- navigation --------------------------------------------------------
@@ -719,6 +775,9 @@ impl Reader {
         }
         let xhtml = self.book.chapter_xhtml(chapter)?;
         let parsed = Arc::new(parse_chapter(&xhtml));
+        if let Some(slot) = self.chapter_chars.get_mut(chapter) {
+            *slot = Some(parsed.blocks.iter().map(|block| block.text().len()).sum());
+        }
         self.chapters.put(chapter, Arc::clone(&parsed));
         Ok(parsed)
     }
@@ -878,6 +937,7 @@ impl Reader {
         let position = self.position()?;
         let progress = self.progress();
         let chapter_progress = self.chapter_fraction();
+        let minutes_left = self.minutes_left();
         let toc_index = self.active_toc();
         let chapter_label = self.current_label();
         let transition = self.pending_transition.take();
@@ -893,6 +953,7 @@ impl Reader {
                 position,
                 progress,
                 chapter_progress,
+                minutes_left,
                 toc_index,
                 chapter_label,
                 transition,
@@ -952,6 +1013,7 @@ impl Reader {
             position,
             progress,
             chapter_progress,
+            minutes_left,
             toc_index,
             chapter_label,
             transition,
@@ -968,6 +1030,7 @@ impl Reader {
         position: Position,
         progress: f32,
         chapter_progress: f32,
+        minutes_left: Option<u32>,
         toc_index: Option<usize>,
         chapter_label: String,
         transition: Option<Transition>,
@@ -985,6 +1048,7 @@ impl Reader {
             position,
             progress,
             chapter_progress,
+            minutes_left,
             transition,
             focus: self.focus,
             spotlight: self.spotlight,

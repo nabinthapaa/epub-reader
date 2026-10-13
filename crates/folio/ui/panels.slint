@@ -1,5 +1,5 @@
-import { Tokens, ToolButton, TocRow, SearchRow, ShelfRow } from "tokens.slint";
-import { ScrollView, LineEdit, ComboBox, CheckBox } from "std-widgets.slint";
+import { Tokens, ToolButton, ThemedField, ThemedCheck, TocRow, SearchRow, ShelfRow } from "tokens.slint";
+import { ScrollView } from "std-widgets.slint";
 
 // Table of contents, flattened with indentation per nesting level.
 export component TocPanel inherits Rectangle {
@@ -29,6 +29,9 @@ export component TocPanel inherits Rectangle {
         }
 
         ScrollView {
+            // The panel already has a border; the widget scrollbar draws a
+            // second vertical line 15px inside it.
+            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
             VerticalLayout {
                 spacing: 1px;
                 for row in rows: Rectangle {
@@ -38,8 +41,18 @@ export component TocPanel inherits Rectangle {
                         ? tokens.accent.with-alpha(0.16)
                         : (hover.has-hover ? tokens.text.with-alpha(0.06) : transparent);
 
+                    // A tint at 0.16 alpha is nearly invisible in the dark
+                    // theme, so the current entry also gets a bar.
+                    if row.current: Rectangle {
+                        x: 0;
+                        width: 3px;
+                        height: parent.height;
+                        border-radius: 1.5px;
+                        background: tokens.accent;
+                    }
+
                     label := Text {
-                        x: 8px + row.depth * 12px;
+                        x: 10px + row.depth * 12px;
                         width: parent.width - self.x - 8px;
                         text: row.label;
                         color: row.current ? tokens.accent : tokens.text;
@@ -67,6 +80,7 @@ export component SearchPanel inherits Rectangle {
     in property <string> query;
     callback run(string);
     callback activate(int);
+    callback dismissed();
 
     width: 300px;
     background: tokens.surface;
@@ -80,21 +94,25 @@ export component SearchPanel inherits Rectangle {
         padding: 10px;
         spacing: 8px;
 
-        field := LineEdit {
-            placeholder-text: "Search this book";
-            text: query;
+        field := ThemedField {
+            tokens: tokens;
+            placeholder: "Search this book";
             accepted(text) => { run(text); }
+            escaped => { root.dismissed(); }
         }
 
         Text {
             text: searching
-                ? "Searching…"
-                : (results.length > 0 ? results.length + " matches" : "No matches");
+                ? "SEARCHING…"
+                : (results.length > 0 ? results.length + " MATCHES" : "NO MATCHES");
             color: tokens.muted;
             font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.6px;
         }
 
         ScrollView {
+            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
             VerticalLayout {
                 spacing: 2px;
                 for row in results: Rectangle {
@@ -110,7 +128,7 @@ export component SearchPanel inherits Rectangle {
                         Text {
                             text: row.label;
                             color: tokens.muted;
-                            font-size: 10px;
+                            font-size: 11px;
                             overflow: elide;
                         }
                         Text {
@@ -131,7 +149,7 @@ export component SearchPanel inherits Rectangle {
     }
 
     public function focus-field() {
-        field.focus();
+        field.focus-field();
     }
 }
 
@@ -147,7 +165,7 @@ export component Shelf inherits Rectangle {
     // collapse to whatever their contents happen to need.
     private property <length> tile-width: 164px;
     private property <length> cover-height: 212px;
-    private property <length> tile-height: 288px;
+    private property <length> tile-height: 304px;
 
     background: tokens.page;
 
@@ -210,6 +228,13 @@ export component Shelf inherits Rectangle {
                                 height: parent.height;
                                 image-fit: contain;
                             }
+                            if book.progress > 0: Rectangle {
+                                y: parent.height - 3px;
+                                x: 0;
+                                width: parent.width * book.progress / 100;
+                                height: 3px;
+                                background: tokens.accent;
+                            }
                             // Books with no cover get their title instead of a
                             // blank rectangle.
                             if book.cover.width == 0: Text {
@@ -231,15 +256,14 @@ export component Shelf inherits Rectangle {
                             font-size: 12px;
                             font-weight: 600;
                             wrap: word-wrap;
-                            overflow: elide;
-                            min-height: 32px;
-                            max-height: 32px;
+                            // Two lines were already reserved; eliding threw
+                            // away the tail of every title for nothing.
+                            min-height: 48px;
+                            max-height: 48px;
                         }
 
                         Text {
-                            text: book.progress > 0
-                                ? book.progress + "% · " + book.author
-                                : book.author;
+                            text: book.author;
                             color: tokens.muted;
                             font-size: 11px;
                             overflow: elide;
@@ -301,10 +325,9 @@ export component Shelf inherits Rectangle {
         }
 
         Text {
-            text: "Ctrl+O opens a book · drag the shelf sideways for more";
+            text: "Ctrl+O opens a book · ? for keyboard shortcuts";
             color: tokens.muted;
             font-size: 11px;
-            visible: books.length > 0;
         }
     }
 }
@@ -328,6 +351,8 @@ export component SettingsPanel inherits Rectangle {
     callback set-measure(int);
     callback dismiss();
 
+    private property <bool> picking-family: false;
+
     width: 304px;
     // Sized to its contents: an absolutely positioned child would otherwise
     // stretch to the full height of the window.
@@ -336,6 +361,9 @@ export component SettingsPanel inherits Rectangle {
     border-width: 1px;
     border-color: tokens.border;
     border-radius: 10px;
+    drop-shadow-blur: 24px;
+    drop-shadow-offset-y: 8px;
+    drop-shadow-color: #000000.with-alpha(0.45);
 
     content := VerticalLayout {
         padding: 14px;
@@ -343,11 +371,11 @@ export component SettingsPanel inherits Rectangle {
         alignment: start;
 
         Text {
-            text: "Reading";
+            text: "DISPLAY";
             color: tokens.muted;
             font-size: 11px;
-            font-weight: 700;
-            letter-spacing: 0.8px;
+            font-weight: 600;
+            letter-spacing: 0.6px;
         }
 
         HorizontalLayout {
@@ -379,16 +407,64 @@ export component SettingsPanel inherits Rectangle {
         }
 
         Text {
-            text: "Typeface";
+            text: "TYPEFACE";
             color: tokens.muted;
             font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.6px;
         }
 
-        ComboBox {
-            height: 30px;
-            model: families;
-            current-index: family-index;
-            selected(value) => { pick-family(self.current-index); }
+        // The installed family, with the list folded away until asked for: a
+        // dropdown from the widget library would paint itself off-theme.
+        ToolButton {
+            tokens: tokens;
+            text: families.length > family-index && family-index >= 0
+                ? families[family-index]
+                : "System serif";
+            active: picking-family;
+            clicked => { picking-family = !picking-family; }
+        }
+
+        if picking-family: Rectangle {
+            min-height: 148px;
+            max-height: 148px;
+            border-radius: 6px;
+            background: tokens.page;
+            border-width: 1px;
+            border-color: tokens.border;
+
+            ScrollView {
+                vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+                VerticalLayout {
+                    padding: 4px;
+                    spacing: 1px;
+                    for family[index] in families: Rectangle {
+                        min-height: 24px;
+                        max-height: 24px;
+                        border-radius: 4px;
+                        background: index == family-index
+                            ? tokens.accent.with-alpha(0.16)
+                            : (pick.has-hover ? tokens.text.with-alpha(0.06) : transparent);
+                        Text {
+                            x: 8px;
+                            text: family;
+                            color: index == family-index ? tokens.accent : tokens.text;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            height: parent.height;
+                            overflow: elide;
+                            width: parent.width - 16px;
+                        }
+                        pick := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                pick-family(index);
+                                picking-family = false;
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         HorizontalLayout {
@@ -423,25 +499,24 @@ export component SettingsPanel inherits Rectangle {
             }
         }
 
-        CheckBox {
-            height: 24px;
+        ThemedCheck {
+            tokens: tokens;
             text: "Justify paragraphs";
             checked: justify;
-            toggled => { set-justify(self.checked); }
+            toggled(on) => { set-justify(on); }
         }
 
-        CheckBox {
-            height: 24px;
+        ThemedCheck {
+            tokens: tokens;
             text: "Spotlight paragraph in focus";
             checked: spotlight;
-            toggled => { set-spotlight(self.checked); }
+            toggled(on) => { set-spotlight(on); }
         }
 
         Text {
-            text: "Press f for focus mode, / to search, c for contents.";
+            text: "Keyboard shortcuts   ?";
             color: tokens.muted;
             font-size: 11px;
-            wrap: word-wrap;
         }
     }
 }

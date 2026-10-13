@@ -71,3 +71,183 @@ export component ToolButton inherits Rectangle {
         }
     ]
 }
+
+// A text field that obeys the theme. The std-widgets LineEdit paints itself
+// near-white whatever the palette, which in a dark reading theme makes the
+// search box the brightest thing on screen — brighter than the prose.
+export component ThemedField inherits Rectangle {
+    in property <Tokens> tokens;
+    in property <string> placeholder;
+    in-out property <string> text <=> input.text;
+    callback accepted(string);
+    callback escaped();
+
+    min-height: 32px;
+    max-height: 32px;
+    border-radius: 6px;
+    background: tokens.page;
+    border-width: 1px;
+    border-color: input.has-focus ? tokens.accent : tokens.border;
+
+    input := TextInput {
+        x: 9px;
+        width: parent.width - 18px;
+        height: parent.height;
+        color: tokens.text;
+        font-size: 13px;
+        single-line: true;
+        vertical-alignment: center;
+        selection-background-color: tokens.accent.with-alpha(0.35);
+        selection-foreground-color: tokens.text;
+        accepted => { root.accepted(self.text); }
+        key-pressed(event) => {
+            if (event.text == Key.Escape) { root.escaped(); return accept; }
+            return reject;
+        }
+    }
+
+    if input.text == "": Text {
+        x: 10px;
+        text: placeholder;
+        color: tokens.muted;
+        font-size: 13px;
+        vertical-alignment: center;
+        height: parent.height;
+    }
+
+    public function focus-field() { input.focus(); }
+}
+
+// Likewise for checkboxes: a 16px box drawn from tokens, not from the widget
+// library's own palette.
+export component ThemedCheck inherits Rectangle {
+    in property <Tokens> tokens;
+    in property <string> text;
+    in property <bool> checked;
+    callback toggled(bool);
+
+    min-height: 26px;
+    max-height: 26px;
+    border-radius: 5px;
+    background: touch.has-hover ? tokens.text.with-alpha(0.05) : transparent;
+
+    HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 4px;
+        spacing: 9px;
+        alignment: start;
+
+        Rectangle {
+            y: (parent.height - 16px) / 2;
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: checked ? tokens.accent : tokens.border;
+            background: checked ? tokens.accent.with-alpha(0.9) : transparent;
+            Text {
+                text: checked ? "✓" : "";
+                color: tokens.page;
+                font-size: 11px;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: parent.width;
+                height: parent.height;
+            }
+        }
+
+        Text {
+            text: root.text;
+            color: tokens.text;
+            font-size: 12px;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(!root.checked); }
+    }
+}
+
+// The shortcuts card. Nearly everything Folio can do is a keypress, and until
+// now the only hints were two muted one-liners.
+export component Shortcuts inherits Rectangle {
+    in property <Tokens> tokens;
+    callback dismiss();
+
+    background: #000000.with-alpha(0.45);
+    TouchArea { clicked => { root.dismiss(); } }
+
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 560px;
+        height: card.preferred-height;
+        background: tokens.surface;
+        border-width: 1px;
+        border-color: tokens.border;
+        border-radius: 12px;
+        drop-shadow-blur: 32px;
+        drop-shadow-offset-y: 10px;
+        drop-shadow-color: #000000.with-alpha(0.5);
+
+        card := VerticalLayout {
+            padding: 24px;
+            spacing: 14px;
+            alignment: start;
+
+            Text {
+                text: "Keyboard shortcuts";
+                color: tokens.text;
+                font-size: 17px;
+                font-weight: 700;
+            }
+
+            HorizontalLayout {
+                spacing: 28px;
+
+                VerticalLayout {
+                    spacing: 7px;
+                    Text {
+                        text: "READING";
+                        color: tokens.muted;
+                        font-size: 11px;
+                        font-weight: 600;
+                        letter-spacing: 0.6px;
+                    }
+                    Text { text: "Space / PgDn      scroll a screen"; color: tokens.text; font-size: 12px; }
+                    Text { text: "↑ ↓ or k j        scroll a step"; color: tokens.text; font-size: 12px; }
+                    Text { text: "n / p             next / previous chapter"; color: tokens.text; font-size: 12px; }
+                    Text { text: "Home              top of the chapter"; color: tokens.text; font-size: 12px; }
+                    Text { text: "Backspace         back after a link"; color: tokens.text; font-size: 12px; }
+                }
+
+                VerticalLayout {
+                    spacing: 7px;
+                    Text {
+                        text: "VIEW";
+                        color: tokens.muted;
+                        font-size: 11px;
+                        font-weight: 600;
+                        letter-spacing: 0.6px;
+                    }
+                    Text { text: "f                 focus mode"; color: tokens.text; font-size: 12px; }
+                    Text { text: "s                 spotlight a paragraph"; color: tokens.text; font-size: 12px; }
+                    Text { text: "t                 cycle theme"; color: tokens.text; font-size: 12px; }
+                    Text { text: "Ctrl + / − / 0    zoom in, out, reset"; color: tokens.text; font-size: 12px; }
+                    Text { text: "c  /  /           contents · search"; color: tokens.text; font-size: 12px; }
+                }
+            }
+
+            Text {
+                text: "Esc backs out one layer at a time and ends at the shelf · Ctrl+O opens a book · Ctrl+W puts it away";
+                color: tokens.muted;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+        }
+    }
+}

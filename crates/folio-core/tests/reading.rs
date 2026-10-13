@@ -300,7 +300,13 @@ fn themes_change_pixels_without_moving_the_text() {
     let dark_band = dark.band.expect("a theme change repaints");
     assert_eq!(light_band.rgba.len(), dark_band.rgba.len());
     assert_ne!(light_band.rgba, dark_band.rgba, "the band is repainted");
-    assert_eq!(&dark_band.rgba[..4], &[0x16, 0x17, 0x19, 0xFF]);
+    // Taken from the theme rather than hard-coded, so tuning the palette does
+    // not break the test that only cares that the page is painted with it.
+    let dark_page = Theme::new(ThemePreset::Dark).page;
+    assert_eq!(
+        &dark_band.rgba[..4],
+        &[dark_page.r, dark_page.g, dark_page.b, 0xFF]
+    );
     assert_eq!(
         light.position, dark.position,
         "a theme switch never moves the reader"
