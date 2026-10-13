@@ -1,0 +1,24 @@
+[package]
+name = "folio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+folio-core = { path = "../folio-core" }
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+slint = "1.17"
+rfd = "0.17.2"
+open = "5.4.4"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-appender = "0.2.5"
+image = "0.25.10"
+directories = "6.0.0"
+
+[build-dependencies]
+slint-build = "1.17"
+
+[dev-dependencies]
+i-slint-backend-testing = "=1.17.0"

@@ -1,0 +1,250 @@
+import { Tokens, TocRow, SearchRow, ShelfRow } from "tokens.slint";
+import { ScrollView, LineEdit } from "std-widgets.slint";
+
+// Table of contents, flattened with indentation per nesting level.
+export component TocPanel inherits Rectangle {
+    in property <Tokens> tokens;
+    in property <[TocRow]> rows;
+    callback activate(int);
+
+    width: 260px;
+    background: tokens.surface;
+
+    Rectangle {
+        x: parent.width - 1px;
+        width: 1px;
+        background: tokens.border;
+    }
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 6px;
+
+        Text {
+            text: "Contents";
+            color: tokens.muted;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.8px;
+        }
+
+        ScrollView {
+            VerticalLayout {
+                spacing: 1px;
+                for row in rows: Rectangle {
+                    height: label.preferred-height + 12px;
+                    border-radius: 5px;
+                    background: row.current
+                        ? tokens.accent.with-alpha(0.16)
+                        : (hover.has-hover ? tokens.text.with-alpha(0.06) : transparent);
+
+                    label := Text {
+                        x: 8px + row.depth * 12px;
+                        width: parent.width - self.x - 8px;
+                        text: row.label;
+                        color: row.current ? tokens.accent : tokens.text;
+                        font-size: 13px;
+                        font-weight: row.current ? 600 : 400;
+                        wrap: word-wrap;
+                        vertical-alignment: center;
+                    }
+
+                    hover := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { activate(row.index); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// In-book search: a query field and its results.
+export component SearchPanel inherits Rectangle {
+    in property <Tokens> tokens;
+    in property <[SearchRow]> results;
+    in property <bool> searching;
+    in property <string> query;
+    callback run(string);
+    callback activate(int);
+
+    width: 300px;
+    background: tokens.surface;
+
+    Rectangle {
+        width: 1px;
+        background: tokens.border;
+    }
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 8px;
+
+        field := LineEdit {
+            placeholder-text: "Search this book";
+            text: query;
+            accepted(text) => { run(text); }
+        }
+
+        Text {
+            text: searching
+                ? "Searching…"
+                : (results.length > 0 ? results.length + " matches" : "No matches");
+            color: tokens.muted;
+            font-size: 11px;
+        }
+
+        ScrollView {
+            VerticalLayout {
+                spacing: 2px;
+                for row in results: Rectangle {
+                    height: content.preferred-height + 12px;
+                    border-radius: 5px;
+                    background: hover.has-hover ? tokens.text.with-alpha(0.06) : transparent;
+
+                    content := VerticalLayout {
+                        x: 8px;
+                        width: parent.width - 16px;
+                        y: 6px;
+                        spacing: 2px;
+                        Text {
+                            text: row.label;
+                            color: tokens.muted;
+                            font-size: 10px;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: row.snippet;
+                            color: tokens.text;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    hover := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { activate(row.index); }
+                    }
+                }
+            }
+        }
+    }
+
+    public function focus-field() {
+        field.focus();
+    }
+}
+
+// The start screen: recently opened books, newest first.
+export component Shelf inherits Rectangle {
+    in property <Tokens> tokens;
+    in property <[ShelfRow]> books;
+    callback open-book(int);
+    callback open-file();
+
+    background: tokens.page;
+
+    VerticalLayout {
+        padding: 36px;
+        spacing: 18px;
+        alignment: start;
+
+        Text {
+            text: "Folio";
+            color: tokens.text;
+            font-size: 28px;
+            font-weight: 700;
+        }
+
+        Text {
+            text: books.length > 0 ? "Continue reading" : "Open an EPUB to start reading";
+            color: tokens.muted;
+            font-size: 13px;
+        }
+
+        ScrollView {
+            VerticalLayout {
+                alignment: start;
+                HorizontalLayout {
+                    spacing: 16px;
+                    alignment: start;
+
+                    for book in books: Rectangle {
+                        width: 150px;
+                        height: 250px;
+                        border-radius: 8px;
+                        background: tile.has-hover ? tokens.text.with-alpha(0.06) : transparent;
+
+                        VerticalLayout {
+                            padding: 8px;
+                            spacing: 6px;
+
+                            Rectangle {
+                                height: 170px;
+                                border-radius: 4px;
+                                background: tokens.surface;
+                                border-width: 1px;
+                                border-color: tokens.border;
+                                clip: true;
+                                Image {
+                                    source: book.cover;
+                                    width: parent.width;
+                                    height: parent.height;
+                                    image-fit: contain;
+                                }
+                            }
+                            Text {
+                                text: book.title;
+                                color: tokens.text;
+                                font-size: 12px;
+                                font-weight: 600;
+                                wrap: word-wrap;
+                                overflow: elide;
+                                height: 32px;
+                            }
+                            Text {
+                                text: book.progress > 0 ? book.progress + "% · " + book.author : book.author;
+                                color: tokens.muted;
+                                font-size: 11px;
+                                overflow: elide;
+                            }
+                        }
+
+                        tile := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { open-book(book.index); }
+                        }
+                    }
+
+                    Rectangle {
+                        width: 150px;
+                        height: 250px;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: tokens.border;
+                        background: add.has-hover ? tokens.text.with-alpha(0.06) : transparent;
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: "+";
+                                color: tokens.muted;
+                                font-size: 30px;
+                                horizontal-alignment: center;
+                            }
+                            Text {
+                                text: "Open file…";
+                                color: tokens.muted;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                            }
+                        }
+                        add := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { open-file(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

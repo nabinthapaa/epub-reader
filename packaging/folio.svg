@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <title>Folio</title>
+  <rect x="18" y="14" width="92" height="100" rx="10" fill="#f6ecd9"/>
+  <path d="M18 24a10 10 0 0 1 10-10h18v100H28a10 10 0 0 1-10-10z" fill="#335c81"/>
+  <g fill="#3b2f21" opacity="0.72">
+    <rect x="58" y="36" width="38" height="5" rx="2.5"/>
+    <rect x="58" y="50" width="38" height="5" rx="2.5"/>
+    <rect x="58" y="64" width="38" height="5" rx="2.5"/>
+    <rect x="58" y="78" width="26" height="5" rx="2.5"/>
+  </g>
+  <rect x="28" y="30" width="8" height="34" rx="4" fill="#f6ecd9" opacity="0.85"/>
+</svg>

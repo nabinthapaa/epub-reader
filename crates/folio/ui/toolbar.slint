@@ -1,0 +1,108 @@
+import { Tokens, ToolButton } from "tokens.slint";
+
+// The top bar: navigation, view controls, and the book's title.
+export component Toolbar inherits Rectangle {
+    in property <Tokens> tokens;
+    in property <string> title;
+    in property <bool> toc-open;
+    in property <bool> search-open;
+    in property <bool> has-book;
+    in property <bool> can-go-back;
+    in property <int> font-px;
+    in property <string> theme-label;
+
+    callback toggle-toc();
+    callback toggle-search();
+    callback open-file();
+    callback cycle-theme();
+    callback zoom(int);
+    callback zoom-reset();
+    callback toggle-focus();
+    callback back();
+
+    height: 46px;
+    background: tokens.surface;
+
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: tokens.border;
+    }
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 4px;
+        alignment: start;
+
+        ToolButton {
+            tokens: tokens;
+            text: "☰";
+            active: toc-open;
+            enabled: has-book;
+            clicked => { toggle-toc(); }
+        }
+        ToolButton {
+            tokens: tokens;
+            text: "←";
+            visible: can-go-back;
+            clicked => { back(); }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+            Text {
+                text: title;
+                color: tokens.text;
+                font-size: 13px;
+                font-weight: 600;
+                overflow: elide;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+                width: parent.width;
+            }
+        }
+
+        ToolButton {
+            tokens: tokens;
+            text: "🔍";
+            active: search-open;
+            enabled: has-book;
+            clicked => { toggle-search(); }
+        }
+        ToolButton {
+            tokens: tokens;
+            text: "A−";
+            enabled: has-book;
+            clicked => { zoom(-1); }
+        }
+        ToolButton {
+            tokens: tokens;
+            text: font-px + "px";
+            enabled: has-book;
+            clicked => { zoom-reset(); }
+        }
+        ToolButton {
+            tokens: tokens;
+            text: "A+";
+            enabled: has-book;
+            clicked => { zoom(1); }
+        }
+        ToolButton {
+            tokens: tokens;
+            text: theme-label;
+            clicked => { cycle-theme(); }
+        }
+        ToolButton {
+            tokens: tokens;
+            text: "Focus";
+            enabled: has-book;
+            clicked => { toggle-focus(); }
+        }
+        ToolButton {
+            tokens: tokens;
+            text: "Open";
+            clicked => { open-file(); }
+        }
+    }
+}

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Folio
+GenericName=EPUB Reader
+Comment=Read EPUB books, quietly
+Exec=folio %f
+Icon=folio
+Terminal=false
+Categories=Office;Viewer;Literature;
+MimeType=application/epub+zip;
+Keywords=epub;ebook;book;reader;
+StartupNotify=true
+StartupWMClass=folio

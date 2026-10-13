@@ -1,0 +1,46 @@
+# Flatpak manifest.
+#
+# The app id is a placeholder: change it (and rename this file plus the desktop
+# entry it installs) to a domain you control before publishing to Flathub.
+#
+#   flatpak-builder --force-clean --user --install build/flatpak \
+#       packaging/flatpak/dev.folio.Folio.yml
+app-id: dev.folio.Folio
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: folio
+
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  # Books are opened through the file chooser portal (rfd's xdg-portal backend),
+  # so the sandbox needs no blanket access to home.
+  - --filesystem=xdg-documents:ro
+  - --filesystem=xdg-download:ro
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/folio/cargo
+
+modules:
+  - name: folio
+    buildsystem: simple
+    build-commands:
+      - cargo --offline fetch --manifest-path Cargo.toml --verbose
+      - cargo --offline build --release --verbose
+      - install -Dm755 target/release/folio /app/bin/folio
+      - install -Dm644 packaging/folio.desktop /app/share/applications/dev.folio.Folio.desktop
+      - install -Dm644 packaging/folio.svg /app/share/icons/hicolor/scalable/apps/dev.folio.Folio.svg
+      - desktop-file-edit --set-icon=dev.folio.Folio /app/share/applications/dev.folio.Folio.desktop
+    sources:
+      - type: dir
+        path: ../..
+      # Generated from Cargo.lock with flatpak-builder-tools:
+      #   python3 flatpak-cargo-generator.py Cargo.lock -o cargo-sources.json
+      - cargo-sources.json
