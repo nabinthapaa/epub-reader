@@ -15,8 +15,9 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use folio_core::book::{TocItem, path as href_path};
-use folio_core::reader::{Command, SearchHit};
-use folio_core::state::{RecentBook, Settings};
+use folio_core::layout::raster::LinkRegion;
+use folio_core::reader::{Command, SearchHit, Transition};
+use folio_core::state::{Position, RecentBook, Settings};
 use folio_core::store::Store;
 use folio_core::theme::{Theme, ThemeChoice, ThemePreset};
 use slint::ComponentHandle;
@@ -27,6 +28,8 @@ slint::include_modules!();
 
 /// Everything the UI thread keeps between callbacks.
 struct App {
+    /// A handle to itself, for the timers that outlive a callback.
+    me: std::rc::Weak<App>,
     ui: slint::Weak<AppWindow>,
     worker: Worker,
     store: Option<Store>,
@@ -41,6 +44,15 @@ struct App {
     scale: Cell<f32>,
     generation: Cell<u64>,
     frame: RefCell<Option<Box<Frame>>>,
+    /// Hit-testable links of the band on screen, in chapter space.
+    links: RefCell<Vec<LinkRegion>>,
+    /// Scroll offsets in physical pixels: where we are heading, and where the
+    /// view currently is while it eases there.
+    scroll_target: Cell<f32>,
+    scroll_visual: Cell<f32>,
+    scroll_timer: RefCell<Option<slint::Timer>>,
+    transition_timer: RefCell<Option<slint::Timer>>,
+    chapter: Cell<usize>,
     toc: RefCell<Vec<TocItem>>,
     families: RefCell<Vec<String>>,
     /// Kept alive so the transient message clears itself exactly once.
@@ -155,17 +167,18 @@ impl App {
             .unwrap_or(-1)
     }
 
-    /// Handle a click on the page: follow a link, or turn the page.
+    /// Handle a click on the text: follow a link if one is under the pointer.
     fn page_clicked(&self, x: f32, y: f32) {
         let scale = self.scale.get();
-        let (px, py) = (x * scale, y * scale);
-        let link = self.frame.borrow().as_ref().and_then(|frame| {
-            frame
-                .links
-                .iter()
-                .find(|region| region.contains(px, py))
-                .map(|region| region.href.clone())
-        });
+        // Viewport space -> chapter space, which is where links live.
+        let px = x * scale;
+        let py = y * scale + self.scroll_visual.get();
+        let link = self
+            .links
+            .borrow()
+            .iter()
+            .find(|region| region.contains(px, py))
+            .map(|region| region.href.clone());
         match link {
             Some(href) if href_path::is_external(&href) => {
                 if let Err(error) = open::that_detached(&href) {
@@ -174,24 +187,117 @@ impl App {
                 }
             }
             Some(href) => self.command(Command::FollowLink(href)),
-            None => {
-                let width = self.viewport.get().0 as f32;
-                self.command(Command::Page(if px < width * 0.33 { -1 } else { 1 }));
-            }
+            None => {}
         }
+    }
+
+    /// Ease the view towards `target`, or jump straight there.
+    ///
+    /// Easing is for reading: wheel ticks, keys, a nudge. A jump of more than a
+    /// screen is a navigation, and gliding through hundreds of lines would both
+    /// look wrong and outrun the painted band, leaving the window blank.
+    fn set_scroll(&self, target: f32, snap: bool) {
+        let viewport = self
+            .frame
+            .borrow()
+            .as_ref()
+            .map(|frame| frame.viewport_height)
+            .unwrap_or(self.viewport.get().1 as f32);
+        let snap = snap || (target - self.scroll_visual.get()).abs() > viewport;
+        self.scroll_target.set(target);
+        if snap {
+            self.scroll_visual.set(target);
+            self.scroll_timer.borrow_mut().take();
+            self.push_scroll();
+            return;
+        }
+        if (self.scroll_visual.get() - target).abs() < 0.5 {
+            return;
+        }
+        if self.scroll_timer.borrow().is_some() {
+            return;
+        }
+        let weak = self.me.clone();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(16),
+            move || {
+                let Some(app) = weak.upgrade() else { return };
+                let target = app.scroll_target.get();
+                let current = app.scroll_visual.get();
+                let delta = target - current;
+                if delta.abs() < 0.5 {
+                    app.scroll_visual.set(target);
+                    app.push_scroll();
+                    app.scroll_timer.borrow_mut().take();
+                    return;
+                }
+                // Exponential ease: fast at first, settling softly.
+                app.scroll_visual.set(current + delta * 0.28);
+                app.push_scroll();
+            },
+        );
+        *self.scroll_timer.borrow_mut() = Some(timer);
+    }
+
+    fn push_scroll(&self) {
+        if let Some(ui) = self.ui.upgrade() {
+            let scale = self.scale.get().max(0.1);
+            ui.set_scroll(self.scroll_visual.get() / scale);
+        }
+    }
+
+    /// Play the slide-and-fade that marks a new chapter.
+    fn play_transition(&self, direction: Transition) {
+        let Some(ui) = self.ui.upgrade() else { return };
+        ui.set_enter_direction(match direction {
+            Transition::Forward => 1.0,
+            Transition::Backward => -1.0,
+        });
+        ui.set_enter_progress(0.0);
+
+        let weak = self.me.clone();
+        let start = std::time::Instant::now();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(16),
+            move || {
+                let Some(app) = weak.upgrade() else { return };
+                let Some(ui) = app.ui.upgrade() else { return };
+                let elapsed = start.elapsed().as_secs_f32();
+                let t = (elapsed / 0.28).clamp(0.0, 1.0);
+                // Cubic ease-out.
+                let eased = 1.0 - (1.0 - t).powi(3);
+                ui.set_enter_progress(eased);
+                if t >= 1.0 {
+                    app.transition_timer.borrow_mut().take();
+                }
+            },
+        );
+        *self.transition_timer.borrow_mut() = Some(timer);
     }
 
     /// Paint a frame that came back from the worker.
     fn show_frame(&self, frame: Box<Frame>) {
         let Some(ui) = self.ui.upgrade() else { return };
-        ui.set_page_image(bridge::image_from_rgba(
-            &frame.rgba,
-            frame.width,
-            frame.height,
-        ));
-        ui.set_page(frame.page as i32);
-        ui.set_page_count(frame.page_count.max(1) as i32);
+        let scale = self.scale.get().max(0.1);
+
+        if let Some(band) = &frame.band {
+            ui.set_band_image(bridge::image_from_rgba(&band.rgba, band.width, band.height));
+            ui.set_band_height(band.height as f32 / scale);
+        }
+        if let Some(links) = &frame.links {
+            *self.links.borrow_mut() = links.clone();
+        }
+        ui.set_band_top(frame.band_top / scale);
+        ui.set_chapter_height(frame.chapter_height / scale);
+        ui.set_viewport_fraction(
+            (frame.viewport_height / frame.chapter_height.max(1.0)).clamp(0.05, 1.0),
+        );
         ui.set_progress(frame.progress);
+        ui.set_chapter_progress(frame.chapter_progress);
         ui.set_chapter_label(frame.chapter_label.as_str().into());
         ui.set_focus_mode(frame.focus);
         ui.set_spotlight(frame.spotlight);
@@ -199,6 +305,17 @@ impl App {
         ui.set_font_px(frame.font_px.round() as i32);
         ui.set_toc(bridge::toc_rows(&self.toc.borrow(), frame.toc_index));
         self.settings.borrow_mut().type_settings.font_px = frame.font_px;
+        self.chapter.set(frame.chapter);
+
+        // A new chapter arrives in place; the transition animates it in, so the
+        // scroll offset must not also glide across the seam.
+        match frame.transition {
+            Some(direction) => {
+                self.set_scroll(frame.scroll, true);
+                self.play_transition(direction);
+            }
+            None => self.set_scroll(frame.scroll, false),
+        }
         *self.frame.borrow_mut() = Some(frame);
     }
 }
@@ -224,7 +341,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ui = AppWindow::new()?;
     let preset = settings.theme.resolve(ui.get_system_dark());
 
-    let app = Rc::new_cyclic(|_weak: &std::rc::Weak<App>| App {
+    let app = Rc::new_cyclic(|me: &std::rc::Weak<App>| App {
+        me: me.clone(),
         ui: ui.as_weak(),
         worker: spawn_worker(ui.as_weak()),
         store,
@@ -236,6 +354,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         scale: Cell::new(ui.window().scale_factor()),
         generation: Cell::new(0),
         frame: RefCell::new(None),
+        links: RefCell::new(Vec::new()),
+        scroll_target: Cell::new(0.0),
+        scroll_visual: Cell::new(0.0),
+        scroll_timer: RefCell::new(None),
+        transition_timer: RefCell::new(None),
+        chapter: Cell::new(0),
         toc: RefCell::new(Vec::new()),
         families: RefCell::new(Vec::new()),
         notice_timer: RefCell::new(None),
@@ -318,11 +442,23 @@ fn wire_callbacks(ui: &AppWindow, app: &Rc<App>) {
         }};
     }
 
-    on!(on_turn_page, |app: Rc<App>| move |delta: i32| {
-        app.command(Command::Page(delta));
+    on!(on_scroll_by, |app: Rc<App>| move |delta: f32| {
+        // Slint gives logical pixels; the reader thinks in physical ones.
+        app.command(Command::Scroll(delta * app.scale.get()));
+    });
+    on!(on_scroll_screens, |app: Rc<App>| move |screens: i32| {
+        app.command(Command::ScrollScreens(screens as f32));
+    });
+    on!(on_scroll_steps, |app: Rc<App>| move |steps: i32| {
+        app.command(Command::ScrollSteps(steps as f32));
     });
     on!(on_jump_chapter, |app: Rc<App>| move |delta: i32| {
-        app.command(Command::Chapter(delta));
+        if delta == 0 {
+            // Home: back to the top of the chapter being read.
+            app.command(Command::GoTo(Position::chapter_start(app.chapter.get())));
+        } else {
+            app.command(Command::Chapter(delta));
+        }
     });
     on!(on_toggle_focus, |app: Rc<App>| move || {
         let focus = app
@@ -427,11 +563,7 @@ fn wire_callbacks(ui: &AppWindow, app: &Rc<App>) {
         }
     });
     on!(on_pick_family, |app: Rc<App>| move |index: i32| {
-        let family = app
-            .families
-            .borrow()
-            .get(index.max(0) as usize)
-            .cloned();
+        let family = app.families.borrow().get(index.max(0) as usize).cloned();
         if let Some(family) = family {
             app.edit_type_settings(move |settings| settings.family = Some(family));
         }

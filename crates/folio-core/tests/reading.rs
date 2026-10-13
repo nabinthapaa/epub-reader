@@ -4,7 +4,7 @@
 mod support;
 
 use folio_core::book::ports::{Target, TocItem};
-use folio_core::reader::{Command, Reader};
+use folio_core::reader::{Command, Reader, Transition};
 use folio_core::state::{Position, Settings};
 use folio_core::theme::{Theme, ThemePreset};
 use support::FakeBook;
@@ -24,35 +24,82 @@ fn reader_with(chapters: Vec<(&str, &str)>) -> Reader {
 }
 
 #[test]
-fn turning_past_the_last_page_moves_to_the_next_chapter() {
+fn scrolling_is_continuous_until_the_chapter_ends() {
     let long = support::paragraphs(30);
     let mut reader = reader_with(vec![
         ("one.xhtml", long.as_str()),
         ("two.xhtml", "<p>second chapter</p>"),
     ]);
 
-    let view = reader.apply(Command::Refresh).unwrap();
-    assert_eq!(view.chapter, 0);
-    assert!(view.page_count > 1, "fixture spans pages");
+    let start = reader.apply(Command::Refresh).unwrap();
+    assert_eq!(start.chapter, 0);
+    assert_eq!(start.scroll, 0.0);
+    assert!(
+        start.chapter_height > start.viewport_height,
+        "fixture should be scrollable"
+    );
 
-    for _ in 0..view.page_count {
-        reader.apply(Command::Page(1)).unwrap();
-    }
-    let view = reader.apply(Command::Refresh).unwrap();
-    assert_eq!(view.chapter, 1, "page turns cross the chapter boundary");
-    assert_eq!(view.page, 0);
+    // Small scrolls move within the chapter and do not animate anything.
+    let scrolled = reader.apply(Command::Scroll(120.0)).unwrap();
+    assert_eq!(scrolled.scroll, 120.0);
+    assert_eq!(scrolled.chapter, 0);
+    assert!(scrolled.transition.is_none(), "no seam inside a chapter");
 
-    // And back again.
-    let view = reader.apply(Command::Page(-1)).unwrap();
-    assert_eq!(view.chapter, 0);
-    assert_eq!(view.page, view.page_count - 1, "lands on the last page");
+    // Scrolling to the very bottom stays in the chapter...
+    let bottom = reader.apply(Command::Scroll(1_000_000.0)).unwrap();
+    assert_eq!(
+        bottom.chapter, 0,
+        "the first overscroll only reaches the end"
+    );
+    assert!(bottom.transition.is_none());
+    assert!(bottom.scroll > 0.0);
+
+    // ...and only the next scroll crosses over, with a transition to animate.
+    let next = reader.apply(Command::Scroll(80.0)).unwrap();
+    assert_eq!(
+        next.chapter, 1,
+        "scrolling past the end enters the next chapter"
+    );
+    assert_eq!(next.scroll, 0.0);
+    assert_eq!(next.transition, Some(Transition::Forward));
+    assert!(next.band.is_some(), "a new chapter always brings pixels");
+
+    // Scrolling up from the top of a chapter goes back to the end of the one
+    // before it, the mirror of how we got here.
+    let crossed = reader.apply(Command::Scroll(-50.0)).unwrap();
+    assert_eq!(crossed.chapter, 0);
+    assert_eq!(crossed.transition, Some(Transition::Backward));
+    assert!(crossed.scroll > 0.0, "lands at the end of the chapter");
 }
 
 #[test]
-fn the_first_page_stays_put_at_the_start_of_the_book() {
+fn the_start_of_the_book_does_not_move() {
     let mut reader = reader_with(vec![("one.xhtml", "<p>only</p>")]);
-    let view = reader.apply(Command::Page(-1)).unwrap();
-    assert_eq!((view.chapter, view.page), (0, 0));
+    let view = reader.apply(Command::Scroll(-500.0)).unwrap();
+    assert_eq!((view.chapter, view.scroll), (0, 0.0));
+    assert!(view.transition.is_none());
+}
+
+#[test]
+fn a_band_is_reused_while_scrolling_inside_it() {
+    let long = support::paragraphs(60);
+    let mut reader = reader_with(vec![("one.xhtml", long.as_str())]);
+
+    let first = reader.apply(Command::Refresh).unwrap();
+    assert!(first.band.is_some(), "the first frame paints");
+
+    // A nudge stays inside the painted band: no new pixels, just an offset.
+    let nudge = reader.apply(Command::Scroll(8.0)).unwrap();
+    assert!(
+        nudge.band.is_none(),
+        "scrolling inside the band must not repaint"
+    );
+    assert_eq!(nudge.scroll, 8.0);
+
+    // Scrolling far enough demands a fresh band.
+    let far = reader.apply(Command::Scroll(5_000.0)).unwrap();
+    assert!(far.band.is_some(), "leaving the band paints a new one");
+    assert!(far.band_top > 0.0);
 }
 
 #[test]
@@ -60,9 +107,7 @@ fn zooming_keeps_the_reader_in_the_same_place() {
     let long = support::paragraphs(60);
     let mut reader = reader_with(vec![("one.xhtml", long.as_str())]);
 
-    for _ in 0..3 {
-        reader.apply(Command::Page(1)).unwrap();
-    }
+    reader.apply(Command::ScrollScreens(3.0)).unwrap();
     let before = reader.apply(Command::Refresh).unwrap();
     let anchor = before.position;
 
@@ -70,11 +115,11 @@ fn zooming_keeps_the_reader_in_the_same_place() {
     assert!(zoomed.font_px > before.font_px, "font actually grew");
     assert_eq!(
         zoomed.position.block, anchor.block,
-        "the block at the top of the page survives a zoom"
+        "the block at the top of the window survives a zoom"
     );
     assert!(
-        zoomed.page_count > before.page_count,
-        "bigger text means more pages"
+        zoomed.chapter_height > before.chapter_height,
+        "bigger text makes a taller column"
     );
 
     let back = reader.apply(Command::ZoomReset).unwrap();
@@ -86,17 +131,15 @@ fn zooming_keeps_the_reader_in_the_same_place() {
 fn focus_mode_narrows_the_column_without_losing_the_place() {
     let long = support::paragraphs(40);
     let mut reader = reader_with(vec![("one.xhtml", long.as_str())]);
-    for _ in 0..2 {
-        reader.apply(Command::Page(1)).unwrap();
-    }
+    reader.apply(Command::ScrollScreens(2.0)).unwrap();
     let before = reader.apply(Command::Refresh).unwrap();
 
     let focused = reader.apply(Command::SetFocus(true)).unwrap();
     assert!(focused.focus);
     assert_eq!(focused.position.block, before.position.block);
     assert!(
-        focused.page_count >= before.page_count,
-        "a narrower measure cannot produce fewer pages"
+        focused.chapter_height >= before.chapter_height,
+        "a narrower measure cannot make a shorter column"
     );
 
     let unfocused = reader.apply(Command::SetFocus(false)).unwrap();
@@ -122,17 +165,22 @@ fn following_a_link_jumps_and_back_returns() {
     ]);
 
     let start = reader.apply(Command::Refresh).unwrap();
-    assert_eq!(start.links.len(), 1, "the link is hit-testable");
+    assert_eq!(
+        start.links.as_ref().map(Vec::len),
+        Some(1),
+        "the link is hit-testable"
+    );
     assert!(!start.can_go_back);
 
     let jumped = reader
         .apply(Command::FollowLink("two.xhtml#target".into()))
         .unwrap();
     assert_eq!(jumped.chapter, 1);
-    assert!(jumped.page > 0, "the anchor is past the first page");
+    assert!(jumped.scroll > 0.0, "the anchor is past the first screen");
+    assert_eq!(jumped.transition, Some(Transition::Forward));
     assert!(jumped.can_go_back);
 
-    // The page shown is the one that holds the anchored block.
+    // The offset shown is the one that holds the anchored block.
     let anchor_block = 40;
     let direct = reader
         .apply(Command::GoTo(Position {
@@ -141,7 +189,12 @@ fn following_a_link_jumps_and_back_returns() {
             char_offset: 0,
         }))
         .unwrap();
-    assert_eq!(direct.page, jumped.page, "link and position agree");
+    assert!(
+        (direct.scroll - jumped.scroll).abs() < 1.0,
+        "link and position agree: {} vs {}",
+        direct.scroll,
+        jumped.scroll
+    );
 
     // Back unwinds the jump that was followed, not the direct navigation.
     let returned = reader.apply(Command::Back).unwrap();
@@ -221,7 +274,7 @@ fn contents_entries_jump_to_their_anchor() {
     assert_eq!(start.toc_index, Some(0), "starts inside the first entry");
 
     let view = reader.apply(Command::GoToToc(1)).unwrap();
-    assert!(view.page > 0, "the heading is past the first page");
+    assert!(view.scroll > 0.0, "the heading is past the first screen");
     assert_eq!(
         view.toc_index,
         Some(1),
@@ -229,7 +282,7 @@ fn contents_entries_jump_to_their_anchor() {
     );
 
     let back_to_front = reader.apply(Command::GoToToc(0)).unwrap();
-    assert_eq!(back_to_front.page, 0);
+    assert_eq!(back_to_front.scroll, 0.0);
     assert_eq!(back_to_front.toc_index, Some(0));
 }
 
@@ -243,9 +296,11 @@ fn themes_change_pixels_without_moving_the_text() {
         .apply(Command::SetTheme(Theme::new(ThemePreset::Dark)))
         .unwrap();
 
-    assert_eq!(light.canvas.rgba.len(), dark.canvas.rgba.len());
-    assert_ne!(light.canvas.rgba, dark.canvas.rgba, "the page is repainted");
-    assert_eq!(&dark.canvas.rgba[..4], &[0x16, 0x17, 0x19, 0xFF]);
+    let light_band = light.band.expect("light frame paints");
+    let dark_band = dark.band.expect("a theme change repaints");
+    assert_eq!(light_band.rgba.len(), dark_band.rgba.len());
+    assert_ne!(light_band.rgba, dark_band.rgba, "the band is repainted");
+    assert_eq!(&dark_band.rgba[..4], &[0x16, 0x17, 0x19, 0xFF]);
     assert_eq!(
         light.position, dark.position,
         "a theme switch never moves the reader"

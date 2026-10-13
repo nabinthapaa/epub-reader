@@ -42,7 +42,8 @@ fn app() -> (AppWindow, Log) {
         }};
     }
 
-    record!(on_turn_page, "turn-page", int);
+    record!(on_scroll_screens, "scroll-screens", int);
+    record!(on_scroll_steps, "scroll-steps", int);
     record!(on_jump_chapter, "jump-chapter", int);
     record!(on_move_spotlight, "move-spotlight", int);
     record!(on_zoom, "zoom", int);
@@ -83,7 +84,7 @@ fn taken(log: &Log) -> Vec<String> {
 /// test functions in parallel. Each block below is an independent scenario.
 #[test]
 fn the_window_responds_to_keys_and_panels() {
-    // --- arrows space and page keys turn pages ---
+    // --- arrows, space and page keys scroll ---
     {
         let (ui, log) = app();
 
@@ -92,15 +93,19 @@ fn the_window_responds_to_keys_and_panels() {
         press(&ui, " ");
         press(&ui, Key::PageDown);
         press(&ui, Key::PageUp);
+        press(&ui, Key::DownArrow);
+        press(&ui, Key::UpArrow);
 
         assert_eq!(
             taken(&log),
             vec![
-                "turn-page(1)",
-                "turn-page(-1)",
-                "turn-page(1)",
-                "turn-page(1)",
-                "turn-page(-1)",
+                "scroll-screens(1)",
+                "scroll-screens(-1)",
+                "scroll-screens(1)",
+                "scroll-screens(1)",
+                "scroll-screens(-1)",
+                "scroll-steps(1)",
+                "scroll-steps(-1)",
             ]
         );
     }
@@ -151,8 +156,8 @@ fn the_window_responds_to_keys_and_panels() {
         press(&ui, "j");
         assert_eq!(
             taken(&log),
-            vec!["turn-page(1)"],
-            "plain reading: page turn"
+            vec!["scroll-steps(1)"],
+            "plain reading: j scrolls"
         );
 
         ui.set_focus_mode(true);
@@ -217,13 +222,15 @@ fn the_window_responds_to_keys_and_panels() {
     // --- status values render from the pushed state ---
     {
         let (ui, _log) = app();
-        ui.set_page(4);
-        ui.set_page_count(12);
         ui.set_progress(0.41);
+        ui.set_chapter_progress(0.6);
         ui.set_chapter_label("CHAPTER 9. The Whale".into());
+        ui.set_scroll(320.0);
+        ui.set_band_top(100.0);
 
-        assert_eq!(ui.get_page(), 4);
-        assert_eq!(ui.get_page_count(), 12);
         assert_eq!(ui.get_chapter_label(), "CHAPTER 9. The Whale");
+        assert_eq!(ui.get_chapter_progress(), 0.6);
+        // The band slides by the difference: chapter space -> viewport space.
+        assert_eq!(ui.get_band_top() - ui.get_scroll(), -220.0);
     }
 }

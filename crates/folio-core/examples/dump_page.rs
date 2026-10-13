@@ -1,8 +1,8 @@
-//! Render pages to PNG without a window, for inspecting layout and themes.
+//! Render what the window would show, to a PNG, with no window involved.
 //!
 //! Usage:
 //!   cargo run -p folio-core --example dump_page -- BOOK.epub \
-//!       [--chapter N] [--page N] [--theme light|sepia|dark] [--zoom N]
+//!       [--chapter N] [--screens N] [--theme light|sepia|dark] [--zoom N]
 //!       [--focus] [--spotlight] [--justify] [--size WxH] [--out FILE]
 
 use std::path::PathBuf;
@@ -17,7 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let book = PathBuf::from(args.next().ok_or("usage: dump_page BOOK.epub [options]")?);
 
     let mut chapter = 1usize;
-    let mut page = 0usize;
+    let mut screens = 0.0_f32;
     let mut preset = ThemePreset::Light;
     let mut zoom = 0i32;
     let mut focus = false;
@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--chapter" => chapter = args.next().unwrap_or_default().parse()?,
-            "--page" => page = args.next().unwrap_or_default().parse()?,
+            "--screens" => screens = args.next().unwrap_or_default().parse()?,
             "--zoom" => zoom = args.next().unwrap_or_default().parse()?,
             "--theme" => {
                 preset = match args.next().unwrap_or_default().as_str() {
@@ -85,27 +85,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         reader.apply(Command::SetSpotlight(true))?;
         reader.apply(Command::MoveSpotlight(2))?;
     }
-    let view = if page > 0 {
-        reader.apply(Command::Page(page as i32))?
+    let view = if screens != 0.0 {
+        reader.apply(Command::ScrollScreens(screens))?
     } else {
         reader.apply(Command::Refresh)?
     };
 
     println!(
-        "chapter {} '{}' · page {}/{} · {} links · {:.0}% · {}px",
+        "chapter {} '{}' · scroll {:.0}/{:.0}px · {} links · {:.0}% of book · {}px type",
         view.chapter,
         view.chapter_label,
-        view.page + 1,
-        view.page_count,
-        view.links.len(),
+        view.scroll,
+        view.chapter_height,
+        view.links.as_ref().map(Vec::len).unwrap_or(0),
         view.progress * 100.0,
         view.font_px
     );
+
+    // The band is taller than the window; crop the part that would be visible.
+    let band = view.band.expect("the first frame always paints a band");
+    let offset = ((view.scroll - view.band_top).max(0.0)).round() as u32;
+    let height = (view.viewport_height.round() as u32).min(band.height.saturating_sub(offset));
+    let start = (offset * band.width * 4) as usize;
+    let end = start + (height * band.width * 4) as usize;
     image::save_buffer(
         &out,
-        &view.canvas.rgba,
-        view.canvas.width,
-        view.canvas.height,
+        &band.rgba[start..end.min(band.rgba.len())],
+        band.width,
+        height,
         image::ColorType::Rgba8,
     )?;
     println!("wrote {out}");

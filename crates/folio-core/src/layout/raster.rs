@@ -1,7 +1,8 @@
-//! Drawing one page into a [`Canvas`].
+//! Drawing a band of the chapter's column into a [`Canvas`].
 //!
-//! Nothing here re-shapes text: it walks the placements pagination produced and
-//! paints the glyphs, rules and images. That is why a theme switch or a focus
+//! Scrolling does not repaint: the renderer paints a band taller than the
+//! viewport and the UI slides it, asking for a new band only when an edge comes
+//! near. Nothing here re-shapes text, which is why a theme switch or a
 //! spotlight move costs a raster and not a layout.
 
 use std::collections::HashMap;
@@ -10,25 +11,26 @@ use cosmic_text::{FontSystem, SwashCache};
 
 use super::canvas::Canvas;
 use super::engine::{BlockLayout, ChapterLayout};
+use super::flow::Flow;
 use super::image::DecodedImage;
-use super::paginate::Pagination;
 use crate::content::BlockKind;
 use crate::theme::{Color, Theme};
 
-/// Where the text column sits inside the viewport, and how the page is dimmed.
+/// Which slice of the chapter to paint, and how.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PageFrame {
-    pub viewport_width: u32,
-    pub viewport_height: u32,
+pub struct BandFrame {
+    pub width: u32,
+    /// Offset of the band's top in chapter space.
+    pub top: f32,
+    pub height: u32,
     /// Left edge of the text column.
     pub column_x: f32,
-    /// Top edge of the content area.
-    pub content_y: f32,
     /// When set, every block but this one is dimmed (focus-mode spotlight).
     pub spotlight: Option<usize>,
 }
 
-/// A hit-testable region of the rendered page.
+/// A hit-testable region, in viewport x and chapter-space y, so that it stays
+/// valid however far the reader has scrolled.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LinkRegion {
     pub href: String,
@@ -44,31 +46,27 @@ impl LinkRegion {
     }
 }
 
-/// The rendered page plus what can be clicked on it.
-pub struct RenderedPage {
+/// A painted band plus what can be clicked inside it.
+pub struct RenderedBand {
     pub canvas: Canvas,
     pub links: Vec<LinkRegion>,
 }
 
-/// Render page `page_index` of `layout`.
-#[allow(clippy::too_many_arguments)]
-pub fn render_page(
+/// Paint the band described by `frame`.
+pub fn render_band(
     fonts: &mut FontSystem,
     swash: &mut SwashCache,
     layout: &ChapterLayout,
-    pagination: &Pagination,
-    page_index: usize,
-    frame: PageFrame,
+    flow: &Flow,
+    frame: BandFrame,
     theme: &Theme,
     images: &HashMap<String, DecodedImage>,
-) -> RenderedPage {
-    let mut canvas = Canvas::new(frame.viewport_width, frame.viewport_height, theme.page);
+) -> RenderedBand {
+    let mut canvas = Canvas::new(frame.width, frame.height, theme.page);
     let mut links = Vec::new();
-    let Some(page) = pagination.pages.get(page_index) else {
-        return RenderedPage { canvas, links };
-    };
+    let band_bottom = frame.top + frame.height as f32;
 
-    for placement in &page.placements {
+    for placement in flow.visible(frame.top, band_bottom) {
         let Some(block) = layout.blocks.get(placement.block) else {
             continue;
         };
@@ -77,12 +75,8 @@ pub fn render_page(
             _ => 1.0,
         };
         let x = frame.column_x + block.indent;
-        let first_top = block
-            .lines
-            .get(placement.line_from)
-            .map(|line| line.top)
-            .unwrap_or(0.0);
-        let y = frame.content_y + placement.y;
+        // Chapter space -> band space.
+        let y = placement.y - frame.top;
 
         match &block.kind {
             BlockKind::Rule => {
@@ -97,17 +91,12 @@ pub fn render_page(
                 continue;
             }
             BlockKind::Quote { .. } => {
-                // The quote bar spans only the lines on this page.
-                let height: f32 = block.lines[placement.line_from..placement.line_to]
-                    .iter()
-                    .map(|line| line.height)
-                    .sum();
                 let bar_width = (block.indent * 0.12).max(2.0);
                 canvas.fill_rect(
                     x - block.indent * 0.45,
                     y,
                     bar_width,
-                    height,
+                    block.height,
                     theme.accent.fade(dim * 0.8),
                 );
             }
@@ -119,7 +108,7 @@ pub fn render_page(
                 draw_image(&mut canvas, image, x, y, layout.column_width, images, dim);
                 continue;
             }
-            // Unavailable: frame the area, then fall through to draw alt text.
+            // Unavailable: frame the space, then fall through to the alt text.
             canvas.stroke_dashed_rect(
                 x,
                 y,
@@ -135,17 +124,16 @@ pub fn render_page(
             fonts,
             swash,
             block,
-            placement.line_from,
-            placement.line_to,
             x,
-            y - first_top,
+            y,
+            placement.y,
             theme,
             dim,
             &mut links,
         );
     }
 
-    RenderedPage { canvas, links }
+    RenderedBand { canvas, links }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -154,10 +142,9 @@ fn draw_block_text(
     fonts: &mut FontSystem,
     swash: &mut SwashCache,
     block: &BlockLayout,
-    line_from: usize,
-    line_to: usize,
     x: f32,
-    y_origin: f32,
+    band_y: f32,
+    chapter_y: f32,
     theme: &Theme,
     dim: f32,
     links: &mut Vec<LinkRegion>,
@@ -165,11 +152,8 @@ fn draw_block_text(
     let Some(buffer) = block.buffer.as_ref() else {
         return;
     };
-    for (run_index, run) in buffer.layout_runs().enumerate() {
-        if run_index < line_from || run_index >= line_to {
-            continue;
-        }
-        let baseline = y_origin + run.line_y;
+    for run in buffer.layout_runs() {
+        let baseline = band_y + run.line_y;
         for glyph in run.glyphs {
             let role = block.roles.get(glyph.metadata);
             let base = match role {
@@ -182,7 +166,7 @@ fn draw_block_text(
                     links,
                     href,
                     x + glyph.x,
-                    y_origin + run.line_top,
+                    chapter_y + run.line_top,
                     glyph.w,
                     run.line_height,
                 );

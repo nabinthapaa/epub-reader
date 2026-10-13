@@ -3,6 +3,12 @@
 //! The UI sends [`Command`]s and gets a [`View`] back. Keeping the cursor,
 //! caches and anchoring here means the whole reading model can be tested
 //! headlessly, and the Slint layer stays a projection of this state.
+//!
+//! Reading is continuous inside a chapter: the cursor is a scroll offset in
+//! chapter space, and the renderer paints a band taller than the viewport so
+//! the UI can slide it without asking for new pixels. Crossing into another
+//! chapter is the one discontinuity, and it is reported as a [`Transition`] so
+//! the UI can animate it rather than snap.
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
@@ -17,8 +23,8 @@ use crate::content::{Chapter, parse_chapter};
 use crate::error::{Error, Result};
 use crate::layout::engine::ImageInfo;
 use crate::layout::{
-    Canvas, ChapterLayout, DecodedImage, FontStack, Layouter, Pagination, TypeSettings, paginate,
-    raster::{LinkRegion, PageFrame, render_page},
+    Canvas, ChapterLayout, DecodedImage, Flow, FontStack, Layouter, TypeSettings, flow,
+    raster::{BandFrame, LinkRegion, render_band},
 };
 use crate::state::{Position, Settings};
 use crate::theme::{Theme, ThemePreset};
@@ -29,18 +35,35 @@ const LAYOUT_CACHE: usize = 3;
 const CHAPTER_CACHE: usize = 6;
 /// Decoded images held for the open book before the map is recycled.
 const IMAGE_CACHE: usize = 48;
+/// Band height as a multiple of the viewport.
+const BAND_FACTOR: f32 = 2.2;
+/// Ceiling on a band's pixels, so a 4K window does not paint (and ship to the
+/// UI) tens of megabytes per repaint.
+const BAND_BYTE_BUDGET: f32 = 32.0 * 1024.0 * 1024.0;
+/// How close the viewport may come to a band edge before a new band is painted,
+/// as a fraction of the viewport.
+const BAND_MARGIN: f32 = 0.4;
+/// Scroll step for the arrow keys, as a fraction of the viewport.
+const LINE_STEP: f32 = 0.18;
+/// Overlap kept when scrolling by a whole screen.
+const PAGE_OVERLAP: f32 = 0.1;
 
 /// What the UI can ask for.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
-    /// Re-render at the current position (after a theme change, for instance).
+    /// Re-render where we are (after a theme change, for instance).
     Refresh,
     Resize {
         width: u32,
         height: u32,
     },
-    /// Turn pages, crossing chapter boundaries.
-    Page(i32),
+    /// Scroll by a number of pixels; positive is downwards. Scrolling past
+    /// either end of a chapter crosses into the next or previous one.
+    Scroll(f32),
+    /// Scroll by whole screens, keeping a little overlap.
+    ScrollScreens(f32),
+    /// Scroll by one arrow-key step.
+    ScrollSteps(f32),
     /// Jump whole chapters.
     Chapter(i32),
     GoTo(Position),
@@ -61,6 +84,13 @@ pub enum Command {
     MoveSpotlight(i32),
 }
 
+/// Which way the reader crossed a chapter boundary, for the UI's animation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Transition {
+    Forward,
+    Backward,
+}
+
 /// One search result.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchHit {
@@ -72,27 +102,38 @@ pub struct SearchHit {
 
 /// Everything the UI needs to draw one frame.
 pub struct View {
-    pub canvas: Canvas,
-    pub links: Vec<LinkRegion>,
+    /// Freshly painted band, or `None` when the previous band still covers the
+    /// viewport and only the scroll offset moved.
+    pub band: Option<Canvas>,
+    /// Offset of the band's top in chapter space.
+    pub band_top: f32,
+    /// Where the viewport's top sits in chapter space.
+    pub scroll: f32,
+    pub chapter_height: f32,
+    pub viewport_height: f32,
+    /// Hit-testable links, in chapter space. Only sent with a new band.
+    pub links: Option<Vec<LinkRegion>>,
     pub chapter: usize,
     pub chapter_label: String,
     /// Row of the table of contents the reader is inside, if any.
     pub toc_index: Option<usize>,
-    pub page: usize,
-    pub page_count: usize,
     pub position: Position,
     /// Fraction of the book read, 0.0..=1.0.
     pub progress: f32,
+    /// Fraction of the current chapter above the viewport.
+    pub chapter_progress: f32,
+    /// Set when this frame begins a new chapter.
+    pub transition: Option<Transition>,
     pub focus: bool,
     pub spotlight: bool,
     pub can_go_back: bool,
     pub font_px: f32,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Cursor {
     chapter: usize,
-    page: usize,
+    scroll: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -106,7 +147,18 @@ struct LayoutKey {
 
 struct LayoutEntry {
     layout: ChapterLayout,
-    pagination: Pagination,
+    flow: Flow,
+}
+
+/// What the band currently on screen covers, so that plain scrolling inside it
+/// costs nothing.
+#[derive(Clone, Debug, PartialEq)]
+struct Band {
+    key: LayoutKey,
+    top: f32,
+    height: f32,
+    theme: ThemePreset,
+    spotlight: Option<usize>,
 }
 
 pub struct Reader {
@@ -127,8 +179,8 @@ pub struct Reader {
     chapters: LruCache<usize, Arc<Chapter>>,
     layouts: LruCache<LayoutKey, LayoutEntry>,
     images: HashMap<String, DecodedImage>,
-    /// Lazily filled plain text per chapter, for search.
-    chapter_text: Vec<Option<Arc<str>>>,
+    band: Option<Band>,
+    pending_transition: Option<Transition>,
 }
 
 impl Reader {
@@ -184,14 +236,15 @@ impl Reader {
             spotlight: settings.spotlight,
             cursor: Cursor {
                 chapter: start.chapter.min(chapter_count - 1),
-                page: 0,
+                scroll: 0.0,
             },
             spotlight_block: 0,
             history: Vec::new(),
             chapters: LruCache::new(NonZeroUsize::new(CHAPTER_CACHE).unwrap()),
             layouts: LruCache::new(NonZeroUsize::new(LAYOUT_CACHE).unwrap()),
             images: HashMap::new(),
-            chapter_text: vec![None; chapter_count],
+            band: None,
+            pending_transition: None,
         };
         reader.go_to(start)?;
         Ok(reader)
@@ -221,8 +274,8 @@ impl Reader {
         self.book.cover()
     }
 
-    /// The body family text is actually shaped with, after the preference
-    /// chain has been resolved against what is installed.
+    /// The body family text is actually shaped with, after the preference chain
+    /// has been resolved against what is installed.
     pub fn body_family(&self) -> String {
         self.stack.body.clone()
     }
@@ -242,16 +295,36 @@ impl Reader {
                 }
                 let anchor = self.position()?;
                 self.viewport = (width, height);
+                self.band = None;
                 self.go_to(anchor)?;
             }
-            Command::Page(delta) => self.turn_pages(delta)?,
+            Command::Scroll(delta) => self.scroll_by(delta)?,
+            Command::ScrollScreens(screens) => {
+                let step = self.content_height() * (1.0 - PAGE_OVERLAP);
+                self.scroll_by(screens * step)?;
+            }
+            Command::ScrollSteps(steps) => {
+                let step = self.content_height() * LINE_STEP;
+                self.scroll_by(steps * step)?;
+            }
             Command::Chapter(delta) => {
                 let target = (self.cursor.chapter as i64 + delta as i64)
                     .clamp(0, self.chapter_count() as i64 - 1)
                     as usize;
+                if target != self.cursor.chapter {
+                    self.pending_transition = Some(if target > self.cursor.chapter {
+                        Transition::Forward
+                    } else {
+                        Transition::Backward
+                    });
+                }
                 self.go_to(Position::chapter_start(target))?;
             }
-            Command::GoTo(position) => self.go_to(position)?,
+            Command::GoTo(position) => {
+                let from = self.cursor.chapter;
+                self.go_to(position)?;
+                self.note_chapter_change(from);
+            }
             Command::GoToToc(index) => {
                 if let Some(target) = self
                     .book
@@ -259,26 +332,32 @@ impl Reader {
                     .get(index)
                     .and_then(|item| item.target.clone())
                 {
-                    let from = self.position()?;
+                    let from_position = self.position()?;
+                    let from_chapter = self.cursor.chapter;
                     let position =
                         self.position_for_anchor(target.chapter, target.anchor.as_deref())?;
-                    self.history.push(from);
+                    self.history.push(from_position);
                     self.go_to(position)?;
+                    self.note_chapter_change(from_chapter);
                 }
             }
             Command::FollowLink(href) => {
                 if let Some(Target { chapter, anchor }) =
                     self.book.resolve_link(self.cursor.chapter, &href)
                 {
-                    let from = self.position()?;
+                    let from_position = self.position()?;
+                    let from_chapter = self.cursor.chapter;
                     let target = self.position_for_anchor(chapter, anchor.as_deref())?;
-                    self.history.push(from);
+                    self.history.push(from_position);
                     self.go_to(target)?;
+                    self.note_chapter_change(from_chapter);
                 }
             }
             Command::Back => {
                 if let Some(previous) = self.history.pop() {
+                    let from = self.cursor.chapter;
                     self.go_to(previous)?;
+                    self.note_chapter_change(from);
                 }
             }
             Command::Zoom(delta) => {
@@ -294,42 +373,42 @@ impl Reader {
                 }
             }
             Command::SetTypeSettings(settings) => self.replace_settings(settings)?,
-            Command::SetTheme(theme) => self.theme = theme,
+            Command::SetTheme(theme) => {
+                self.theme = theme;
+                self.band = None;
+            }
             Command::SetFocus(focus) => {
                 if self.focus != focus {
                     let anchor = self.position()?;
                     self.focus = focus;
+                    self.band = None;
                     self.go_to(anchor)?;
                 }
             }
-            Command::SetSpotlight(spotlight) => self.spotlight = spotlight,
+            Command::SetSpotlight(spotlight) => {
+                self.spotlight = spotlight;
+                self.band = None;
+            }
             Command::MoveSpotlight(delta) => self.move_spotlight(delta)?,
         }
         self.render()
     }
 
-    /// Current position, derived from the first line on the page.
+    /// Current position, derived from the first line in view.
     pub fn position(&mut self) -> Result<Position> {
         let key = self.ensure_layout(self.cursor.chapter)?;
-        let page = self.cursor.page;
+        let scroll = self.cursor.scroll;
         let Some(entry) = self.layouts.peek(&key) else {
             return Ok(Position::chapter_start(self.cursor.chapter));
         };
-        let Some((block_index, line)) = entry
-            .pagination
-            .pages
-            .get(page)
-            .and_then(|page| page.first_line())
-        else {
-            return Ok(Position::chapter_start(self.cursor.chapter));
-        };
+        let (block_index, line) = entry.flow.first_line_at(&entry.layout, scroll);
         let block = entry
             .layout
             .blocks
             .get(block_index)
             .map(|b| b.block)
             .unwrap_or(0);
-        let char_offset = paginate::char_for_line(&entry.layout, block_index, line);
+        let char_offset = char_for_line(&entry.layout, block_index, line);
         Ok(Position {
             chapter: self.cursor.chapter,
             block,
@@ -337,16 +416,27 @@ impl Reader {
         })
     }
 
-    /// Fraction of the book behind the current page.
+    /// Fraction of the book behind the current viewport.
     pub fn progress(&mut self) -> f32 {
         let chapters = self.chapter_count().max(1) as f32;
-        let page_count = self.page_count().max(1) as f32;
-        let within = (self.cursor.page as f32 + 1.0) / page_count;
+        let within = self.chapter_fraction();
         ((self.cursor.chapter as f32 + within) / chapters).clamp(0.0, 1.0)
     }
 
-    /// Search the whole book, cheapest-first: already-parsed chapters are
-    /// scanned from cache, the rest are parsed on demand.
+    /// How far through the current chapter the viewport is.
+    pub fn chapter_fraction(&mut self) -> f32 {
+        let viewport = self.content_height();
+        let Ok(key) = self.ensure_layout(self.cursor.chapter) else {
+            return 0.0;
+        };
+        let scroll = self.cursor.scroll;
+        self.layouts
+            .peek(&key)
+            .map(|entry| entry.flow.fraction(scroll, viewport))
+            .unwrap_or(0.0)
+    }
+
+    /// Search the whole book, parsing chapters on demand.
     pub fn search(&mut self, query: &str, limit: usize) -> Vec<SearchHit> {
         let needle = query.trim().to_lowercase();
         if needle.is_empty() {
@@ -391,15 +481,14 @@ impl Reader {
         hits
     }
 
-    /// The table-of-contents row the current page sits inside.
+    /// The table-of-contents row the viewport sits inside.
     ///
     /// Books that put many chapters in one spine file (most Gutenberg EPUBs do)
-    /// need the entry's fragment to be resolved against the laid-out blocks,
-    /// not just its spine index, or every page claims to be the last chapter in
-    /// the file.
+    /// need the entry's fragment resolved against the laid-out blocks, not just
+    /// its spine index, or every page claims to be the file's last chapter.
     pub fn active_toc(&mut self) -> Option<usize> {
         let chapter = self.cursor.chapter;
-        let current_block = self.first_block_on_page();
+        let current_block = self.first_visible_block();
         let key = self.ensure_layout(chapter).ok()?;
         let entry = self.layouts.peek(&key)?;
 
@@ -428,7 +517,7 @@ impl Reader {
         best.map(|(index, _)| index).or(fallback)
     }
 
-    /// Human-readable label for the current page.
+    /// Human-readable label for what is on screen.
     pub fn current_label(&mut self) -> String {
         let chapter = self.cursor.chapter;
         self.active_toc()
@@ -437,42 +526,57 @@ impl Reader {
             .unwrap_or_else(|| format!("Chapter {}", chapter + 1))
     }
 
-    // --- internals ---------------------------------------------------------
+    // --- navigation --------------------------------------------------------
 
-    fn page_count(&mut self) -> usize {
-        let Ok(key) = self.ensure_layout(self.cursor.chapter) else {
-            return 1;
-        };
-        self.layouts
-            .peek(&key)
-            .map(|entry| entry.pagination.page_count())
-            .unwrap_or(1)
-    }
-
-    fn turn_pages(&mut self, delta: i32) -> Result<()> {
-        let page_count = self.page_count() as i64;
-        let target = self.cursor.page as i64 + delta as i64;
-        if target >= 0 && target < page_count {
-            self.cursor.page = target as usize;
-            self.spotlight_block = self.first_block_on_page();
+    /// Scroll within the chapter, crossing into the next or previous one when
+    /// the reader is already at an edge and keeps going.
+    fn scroll_by(&mut self, delta: f32) -> Result<()> {
+        if delta == 0.0 {
             return Ok(());
         }
-        if target >= page_count {
-            // Forward past the end: first page of the next chapter.
+        let viewport = self.content_height();
+        let max = self.max_scroll()?;
+        let at_end = self.cursor.scroll >= max - 0.5;
+        let at_start = self.cursor.scroll <= 0.5;
+
+        if delta > 0.0 && at_end {
             if self.cursor.chapter + 1 < self.chapter_count() {
+                self.pending_transition = Some(Transition::Forward);
                 self.cursor.chapter += 1;
-                self.cursor.page = 0;
-                self.spotlight_block = self.first_block_on_page();
+                self.cursor.scroll = 0.0;
+                self.band = None;
+                self.spotlight_block = self.first_visible_block();
             }
             return Ok(());
         }
-        // Backward past the start: last page of the previous chapter.
-        if self.cursor.chapter > 0 {
-            self.cursor.chapter -= 1;
-            self.cursor.page = self.page_count().saturating_sub(1);
-            self.spotlight_block = self.first_block_on_page();
+        if delta < 0.0 && at_start {
+            if self.cursor.chapter > 0 {
+                self.pending_transition = Some(Transition::Backward);
+                self.cursor.chapter -= 1;
+                self.band = None;
+                let max = self.max_scroll()?;
+                self.cursor.scroll = max;
+                self.spotlight_block = self.first_visible_block();
+            }
+            return Ok(());
         }
+
+        let _ = viewport;
+        self.cursor.scroll = (self.cursor.scroll + delta).clamp(0.0, max);
+        self.spotlight_block = self.first_visible_block();
         Ok(())
+    }
+
+    /// Record a transition when a jump landed in a different chapter.
+    fn note_chapter_change(&mut self, from: usize) {
+        if self.cursor.chapter == from {
+            return;
+        }
+        self.pending_transition = Some(if self.cursor.chapter > from {
+            Transition::Forward
+        } else {
+            Transition::Backward
+        });
     }
 
     fn replace_settings(&mut self, settings: TypeSettings) -> Result<()> {
@@ -487,25 +591,48 @@ impl Reader {
                 self.settings.mono_family.as_deref(),
             );
         }
+        self.band = None;
         self.go_to(anchor)
     }
 
-    /// Move the cursor to a logical position, resolving it to a page.
+    /// Move the cursor to a logical position, resolving it to a scroll offset.
     fn go_to(&mut self, position: Position) -> Result<()> {
         let chapter = position.chapter.min(self.chapter_count() - 1);
+        if chapter != self.cursor.chapter {
+            self.band = None;
+        }
         self.cursor.chapter = chapter;
         let key = self.ensure_layout(chapter)?;
-        let page = match self.layouts.peek(&key) {
+        let viewport = self.content_height();
+        let scroll = match self.layouts.peek(&key) {
             Some(entry) => {
                 let block_index = entry.layout.position_of_block(position.block).unwrap_or(0);
-                let line =
-                    paginate::line_for_char(&entry.layout, block_index, position.char_offset);
-                entry.pagination.page_of_line(block_index, line)
+                let line = line_for_char(&entry.layout, block_index, position.char_offset);
+                let y = entry.flow.line_y(&entry.layout, block_index, line);
+                // Show a little space above the target, but never so much that
+                // the previous block creeps back into view: the line we aimed
+                // at must still be the first one visible, or the position would
+                // not round-trip and the contents panel would lag a row behind.
+                let target = if block_index == 0 && line == 0 {
+                    0.0
+                } else if line == 0 {
+                    let previous_bottom = entry
+                        .flow
+                        .placements
+                        .iter()
+                        .rfind(|p| p.block < block_index)
+                        .map(|p| p.bottom())
+                        .unwrap_or(0.0);
+                    (y - entry.flow.pad).clamp(previous_bottom, y)
+                } else {
+                    y
+                };
+                target.clamp(0.0, entry.flow.max_scroll(viewport))
             }
-            None => 0,
+            None => 0.0,
         };
-        self.cursor.page = page;
-        self.spotlight_block = self.first_block_on_page();
+        self.cursor.scroll = scroll;
+        self.spotlight_block = self.first_visible_block();
         Ok(())
     }
 
@@ -534,62 +661,56 @@ impl Reader {
         })
     }
 
-    fn first_block_on_page(&mut self) -> usize {
+    /// Index into the layout's blocks of the first block in view.
+    fn first_visible_block(&mut self) -> usize {
         let Ok(key) = self.ensure_layout(self.cursor.chapter) else {
             return 0;
         };
-        let page = self.cursor.page;
+        let scroll = self.cursor.scroll;
         self.layouts
             .peek(&key)
-            .and_then(|entry| entry.pagination.pages.get(page))
-            .and_then(|page| page.first_line())
-            .map(|(block, _)| block)
+            .map(|entry| entry.flow.first_line_at(&entry.layout, scroll).0)
             .unwrap_or(0)
     }
 
+    /// Walk the spotlight by whole paragraphs, scrolling to keep it in view.
     fn move_spotlight(&mut self, delta: i32) -> Result<()> {
         let key = self.ensure_layout(self.cursor.chapter)?;
-        let page_index = self.cursor.page;
-        let blocks: Vec<usize> = self
-            .layouts
-            .peek(&key)
-            .and_then(|entry| entry.pagination.pages.get(page_index))
-            .map(|page| page.placements.iter().map(|p| p.block).collect())
-            .unwrap_or_default();
-        if blocks.is_empty() {
+        let viewport = self.content_height();
+        let current = self.spotlight_block;
+
+        let Some(entry) = self.layouts.peek(&key) else {
             return Ok(());
+        };
+        let order: Vec<usize> = entry.flow.placements.iter().map(|p| p.block).collect();
+        let index = order.iter().position(|b| *b == current).unwrap_or(0) as i64;
+        let next = index + delta as i64;
+
+        if next < 0 || next as usize >= order.len() {
+            // Past either end of the chapter: let the scroll logic cross over.
+            return self.scroll_by(if delta > 0 { viewport } else { -viewport });
         }
-        let current = blocks
+
+        let block = order[next as usize];
+        let (y, height) = entry
+            .flow
+            .placements
             .iter()
-            .position(|b| *b == self.spotlight_block)
-            .unwrap_or(0) as i64;
-        let next = current + delta as i64;
-        if next < 0 {
-            self.turn_pages(-1)?;
-            self.spotlight_block = self.last_block_on_page();
-            return Ok(());
+            .find(|p| p.block == block)
+            .map(|p| (p.y, p.height))
+            .unwrap_or((0.0, 0.0));
+        let max = entry.flow.max_scroll(viewport);
+        self.spotlight_block = block;
+
+        // Keep the active paragraph comfortably inside the viewport.
+        let top_margin = viewport * 0.25;
+        if y < self.cursor.scroll + top_margin || y + height > self.cursor.scroll + viewport {
+            self.cursor.scroll = (y - top_margin).clamp(0.0, max);
         }
-        if next as usize >= blocks.len() {
-            self.turn_pages(1)?;
-            self.spotlight_block = self.first_block_on_page();
-            return Ok(());
-        }
-        self.spotlight_block = blocks[next as usize];
         Ok(())
     }
 
-    fn last_block_on_page(&mut self) -> usize {
-        let Ok(key) = self.ensure_layout(self.cursor.chapter) else {
-            return 0;
-        };
-        let page = self.cursor.page;
-        self.layouts
-            .peek(&key)
-            .and_then(|entry| entry.pagination.pages.get(page))
-            .and_then(|page| page.placements.last())
-            .map(|placement| placement.block)
-            .unwrap_or(0)
-    }
+    // --- layout and painting ----------------------------------------------
 
     /// Parse a chapter, or return the cached parse.
     fn chapter(&mut self, chapter: usize) -> Result<Arc<Chapter>> {
@@ -598,9 +719,6 @@ impl Reader {
         }
         let xhtml = self.book.chapter_xhtml(chapter)?;
         let parsed = Arc::new(parse_chapter(&xhtml));
-        if let Some(slot) = self.chapter_text.get_mut(chapter) {
-            *slot = Some(Arc::from(parsed.text().as_str()));
-        }
         self.chapters.put(chapter, Arc::clone(&parsed));
         Ok(parsed)
     }
@@ -615,28 +733,44 @@ impl Reader {
         }
     }
 
-    /// Geometry of the text column for the current viewport.
-    fn geometry(&self) -> (f32, f32, f32, f32) {
-        let (width, height) = (self.viewport.0 as f32, self.viewport.1 as f32);
+    /// Geometry of the text column: (column width, left edge, vertical pad).
+    fn geometry(&self) -> (f32, f32, f32) {
+        let width = self.viewport.0 as f32;
         let column_width = self.settings.column_width(width, self.focus);
         let column_x = ((width - column_width) / 2.0).max(0.0);
-        let content_y = if self.focus {
-            self.settings.font_px * 1.4
+        let pad = if self.focus {
+            self.settings.font_px * 2.2
         } else {
-            self.settings.font_px * 1.0
+            self.settings.font_px * 1.6
         };
-        let content_height = (height - content_y * 2.0).max(self.settings.font_px * 3.0);
-        (column_width, column_x, content_y, content_height)
+        (column_width, column_x, pad)
     }
 
-    /// Lay out and paginate a chapter if that combination is not cached.
+    /// Height of the viewport, which is the whole window: the chrome is drawn
+    /// by Slint around it.
+    fn content_height(&self) -> f32 {
+        self.viewport.1 as f32
+    }
+
+    fn max_scroll(&mut self) -> Result<f32> {
+        let key = self.ensure_layout(self.cursor.chapter)?;
+        let viewport = self.content_height();
+        Ok(self
+            .layouts
+            .peek(&key)
+            .map(|entry| entry.flow.max_scroll(viewport))
+            .unwrap_or(0.0))
+    }
+
+    /// Lay out and flow a chapter if that combination is not cached.
     fn ensure_layout(&mut self, chapter: usize) -> Result<LayoutKey> {
         let key = self.layout_key(chapter);
         if self.layouts.contains(&key) {
             return Ok(key);
         }
         let parsed = self.chapter(chapter)?;
-        let (column_width, _, _, content_height) = self.geometry();
+        let (column_width, _, pad) = self.geometry();
+        let viewport_height = self.content_height();
 
         let Self {
             book,
@@ -654,7 +788,9 @@ impl Reader {
             &parsed,
             settings,
             column_width,
-            content_height,
+            // An image taller than the window is scaled to fit it, so a figure
+            // never needs two screens of scrolling to see at once.
+            viewport_height - 2.0 * pad,
             &stack.body,
             &stack.mono,
             |href| {
@@ -681,8 +817,14 @@ impl Reader {
                 Some(info)
             },
         );
-        let pagination = paginate::paginate(&layout, content_height);
-        layouts.put(key.clone(), LayoutEntry { layout, pagination });
+        let flowed = flow(&layout, pad);
+        layouts.put(
+            key.clone(),
+            LayoutEntry {
+                layout,
+                flow: flowed,
+            },
+        );
         Ok(key)
     }
 
@@ -699,24 +841,79 @@ impl Reader {
         let _ = self.ensure_layout(chapter);
     }
 
-    /// Draw the current page.
+    /// Decide whether the painted band still covers the viewport.
+    fn band_is_usable(&self, key: &LayoutKey, chapter_height: f32) -> bool {
+        let Some(band) = &self.band else { return false };
+        if band.key != *key
+            || band.theme != self.theme.preset
+            || band.spotlight != self.spotlight_target()
+        {
+            return false;
+        }
+        let viewport = self.content_height();
+        let margin = viewport * BAND_MARGIN;
+        let top_ok = band.top <= 0.0 || self.cursor.scroll >= band.top + margin;
+        let band_bottom = band.top + band.height;
+        let bottom_ok =
+            band_bottom >= chapter_height || self.cursor.scroll + viewport <= band_bottom - margin;
+        top_ok && bottom_ok
+    }
+
+    fn spotlight_target(&self) -> Option<usize> {
+        (self.focus && self.spotlight).then_some(self.spotlight_block)
+    }
+
+    /// Paint the band around the viewport, or reuse the one already on screen.
     fn render(&mut self) -> Result<View> {
         let key = self.ensure_layout(self.cursor.chapter)?;
-        let page_count = self.page_count();
-        self.cursor.page = self.cursor.page.min(page_count.saturating_sub(1));
+        let viewport = self.content_height();
+        let chapter_height = self
+            .layouts
+            .peek(&key)
+            .map(|entry| entry.flow.height)
+            .unwrap_or(viewport);
+        let max_scroll = (chapter_height - viewport).max(0.0);
+        self.cursor.scroll = self.cursor.scroll.clamp(0.0, max_scroll);
+
         let position = self.position()?;
         let progress = self.progress();
+        let chapter_progress = self.chapter_fraction();
         let toc_index = self.active_toc();
         let chapter_label = self.current_label();
-        let (column_width, column_x, content_y, _) = self.geometry();
-        let frame = PageFrame {
-            viewport_width: self.viewport.0,
-            viewport_height: self.viewport.1,
+        let transition = self.pending_transition.take();
+        let (_, column_x, _) = self.geometry();
+
+        if self.band_is_usable(&key, chapter_height) {
+            let band = self.band.clone().expect("checked above");
+            return Ok(self.view(
+                None,
+                band.top,
+                chapter_height,
+                None,
+                position,
+                progress,
+                chapter_progress,
+                toc_index,
+                chapter_label,
+                transition,
+            ));
+        }
+
+        // Paint a band taller than the viewport, centred on it, so scrolling
+        // can slide pixels rather than ask for new ones.
+        let budget_height = BAND_BYTE_BUDGET / (self.viewport.0.max(1) as f32 * 4.0);
+        let band_height = (viewport * BAND_FACTOR)
+            .min(chapter_height.max(viewport))
+            .min(budget_height.max(viewport));
+        let band_top = (self.cursor.scroll - (band_height - viewport) / 2.0)
+            .clamp(0.0, (chapter_height - band_height).max(0.0));
+        let frame = BandFrame {
+            width: self.viewport.0,
+            top: band_top,
+            height: band_height.ceil().max(1.0) as u32,
             column_x,
-            content_y,
-            spotlight: (self.focus && self.spotlight).then_some(self.spotlight_block),
+            spotlight: self.spotlight_target(),
         };
-        let page = self.cursor.page;
         let theme = self.theme;
 
         let Self {
@@ -729,34 +926,108 @@ impl Reader {
         let entry = layouts
             .get(&key)
             .ok_or_else(|| Error::Ebook("layout vanished from cache".into()))?;
-        debug_assert!((entry.layout.column_width - column_width).abs() < 1.0);
-        let rendered = render_page(
+        let rendered = render_band(
             &mut layouter.fonts,
             swash,
             &entry.layout,
-            &entry.pagination,
-            page,
+            &entry.flow,
             frame,
             &theme,
             images,
         );
 
-        Ok(View {
-            canvas: rendered.canvas,
-            links: rendered.links,
+        self.band = Some(Band {
+            key,
+            top: band_top,
+            height: frame.height as f32,
+            theme: theme.preset,
+            spotlight: frame.spotlight,
+        });
+
+        Ok(self.view(
+            Some(rendered.canvas),
+            band_top,
+            chapter_height,
+            Some(rendered.links),
+            position,
+            progress,
+            chapter_progress,
+            toc_index,
+            chapter_label,
+            transition,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn view(
+        &self,
+        band: Option<Canvas>,
+        band_top: f32,
+        chapter_height: f32,
+        links: Option<Vec<LinkRegion>>,
+        position: Position,
+        progress: f32,
+        chapter_progress: f32,
+        toc_index: Option<usize>,
+        chapter_label: String,
+        transition: Option<Transition>,
+    ) -> View {
+        View {
+            band,
+            band_top,
+            scroll: self.cursor.scroll,
+            chapter_height,
+            viewport_height: self.content_height(),
+            links,
             chapter: self.cursor.chapter,
             chapter_label,
             toc_index,
-            page,
-            page_count,
             position,
             progress,
+            chapter_progress,
+            transition,
             focus: self.focus,
             spotlight: self.spotlight,
             can_go_back: !self.history.is_empty(),
             font_px: self.settings.font_px,
-        })
+        }
     }
+}
+
+/// Which visual line of a block contains `char_offset` of its text.
+fn line_for_char(layout: &ChapterLayout, block: usize, char_offset: usize) -> usize {
+    let Some(block_layout) = layout.blocks.get(block) else {
+        return 0;
+    };
+    let Some(buffer) = block_layout.buffer.as_ref() else {
+        return 0;
+    };
+    let mut last = 0;
+    for (run_index, run) in buffer.layout_runs().enumerate() {
+        last = run_index;
+        if let (Some(first), Some(end)) = (run.glyphs.first(), run.glyphs.last())
+            && char_offset >= first.start
+            && char_offset < end.end
+        {
+            return run_index;
+        }
+    }
+    last
+}
+
+/// Character offset of the first glyph on a line, for recording a position.
+fn char_for_line(layout: &ChapterLayout, block: usize, line: usize) -> usize {
+    layout
+        .blocks
+        .get(block)
+        .and_then(|b| b.buffer.as_ref())
+        .and_then(|buffer| {
+            buffer
+                .layout_runs()
+                .nth(line)
+                .and_then(|run| run.glyphs.first().map(|g| g.start))
+        })
+        .unwrap_or(0)
 }
 
 /// A short excerpt around a match, with ellipses where it was cut.

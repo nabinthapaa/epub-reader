@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use folio_core::book::TocItem;
 use folio_core::layout::raster::LinkRegion;
-use folio_core::reader::{Command, Reader, SearchHit, View};
+use folio_core::reader::{Command, Reader, SearchHit, Transition, View};
 use folio_core::state::{Position, RecentBook, Settings};
 use folio_core::store::{Store, now_secs};
 use folio_core::theme::{Theme, ThemePreset};
@@ -48,34 +48,54 @@ pub enum Job {
     Shutdown,
 }
 
-/// A painted page plus everything the chrome shows alongside it.
+/// A painted band plus everything the chrome shows alongside it.
+///
+/// `band` is `None` when the band already on screen still covers the viewport,
+/// which is the common case while scrolling: only the offset moved.
 pub struct Frame {
-    pub rgba: Vec<u8>,
-    pub width: u32,
-    pub height: u32,
-    pub page: usize,
-    pub page_count: usize,
+    pub band: Option<Band>,
+    pub band_top: f32,
+    pub scroll: f32,
+    pub chapter: usize,
+    pub chapter_height: f32,
+    pub viewport_height: f32,
     pub chapter_label: String,
     pub toc_index: Option<usize>,
     pub progress: f32,
+    pub chapter_progress: f32,
+    pub transition: Option<Transition>,
     pub focus: bool,
     pub spotlight: bool,
     pub can_go_back: bool,
     pub font_px: f32,
-    pub links: Vec<LinkRegion>,
+    pub links: Option<Vec<LinkRegion>>,
+}
+
+/// Painted pixels for a slice of the chapter.
+pub struct Band {
+    pub rgba: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl Frame {
     fn from_view(view: View) -> Self {
         Self {
-            width: view.canvas.width,
-            height: view.canvas.height,
-            rgba: view.canvas.rgba,
-            page: view.page,
-            page_count: view.page_count,
+            band: view.band.map(|canvas| Band {
+                width: canvas.width,
+                height: canvas.height,
+                rgba: canvas.rgba,
+            }),
+            band_top: view.band_top,
+            scroll: view.scroll,
+            chapter: view.chapter,
+            chapter_height: view.chapter_height,
+            viewport_height: view.viewport_height,
             chapter_label: view.chapter_label,
             toc_index: view.toc_index,
             progress: view.progress,
+            chapter_progress: view.chapter_progress,
+            transition: view.transition,
             focus: view.focus,
             spotlight: view.spotlight,
             can_go_back: view.can_go_back,

@@ -8,12 +8,24 @@ export { Tokens, TocRow, SearchRow, ShelfRow }
 export component AppWindow inherits Window {
     // --- state pushed from Rust ---
     in property <Tokens> tokens;
-    in property <image> page-image;
+    // The painted band and where it sits, both in logical pixels. The band is
+    // taller than the viewport, so scrolling slides it instead of repainting.
+    in property <image> band-image;
+    in property <length> band-top;
+    in property <length> band-height;
+    /// Eased scroll offset, driven from Rust.
+    in property <length> scroll;
+    in property <length> chapter-height;
+    /// Viewport height as a fraction of the chapter, for the scrollbar thumb.
+    in property <float> viewport-fraction: 1.0;
+    /// 0 while a chapter transition plays, 1 when it has settled.
+    in property <float> enter-progress: 1.0;
+    /// +1 when moving forward through the book, -1 when going back.
+    in property <float> enter-direction: 1.0;
     in property <string> book-title: "Folio";
     in property <string> chapter-label;
-    in property <int> page;
-    in property <int> page-count: 1;
     in property <float> progress;
+    in property <float> chapter-progress;
     in property <int> font-px: 18;
     in property <bool> has-book;
     in property <bool> can-go-back;
@@ -39,7 +51,9 @@ export component AppWindow inherits Window {
     in-out property <bool> settings-open;
 
     // --- requests sent to Rust ---
-    callback turn-page(int);
+    callback scroll-by(length);
+    callback scroll-screens(int);
+    callback scroll-steps(int);
     callback jump-chapter(int);
     callback goto-toc(int);
     callback goto-search(int);
@@ -99,22 +113,23 @@ export component AppWindow inherits Window {
                 if (event.text == "q") { quit(); return accept; }
                 return reject;
             }
-            if (event.text == Key.RightArrow || event.text == Key.PageDown || event.text == " ") {
-                turn-page(1);
+            if (event.text == Key.PageDown || event.text == " " || event.text == Key.RightArrow) {
+                scroll-screens(1);
                 return accept;
             }
-            if (event.text == Key.LeftArrow || event.text == Key.PageUp) {
-                turn-page(-1);
+            if (event.text == Key.PageUp || event.text == Key.LeftArrow) {
+                scroll-screens(-1);
                 return accept;
             }
             if (event.text == Key.DownArrow || event.text == "j") {
-                if (focus-mode && spotlight) { move-spotlight(1); } else { turn-page(1); }
+                if (focus-mode && spotlight) { move-spotlight(1); } else { scroll-steps(1); }
                 return accept;
             }
             if (event.text == Key.UpArrow || event.text == "k") {
-                if (focus-mode && spotlight) { move-spotlight(-1); } else { turn-page(-1); }
+                if (focus-mode && spotlight) { move-spotlight(-1); } else { scroll-steps(-1); }
                 return accept;
             }
+            if (event.text == Key.Home) { jump-chapter(0); return accept; }
             if (event.text == Key.Backspace) { back(); return accept; }
             if (event.text == "f") { toggle-focus(); return accept; }
             if (event.text == "s") { toggle-spotlight(); return accept; }
@@ -167,9 +182,14 @@ export component AppWindow inherits Window {
                     changed height => { viewport-changed(self.width, self.height); }
 
                     if has-book: Image {
-                        source: page-image;
+                        source: band-image;
                         width: parent.width;
-                        height: parent.height;
+                        height: root.band-height;
+                        // Chapter space -> viewport space, plus the small
+                        // offset a chapter transition slides in from.
+                        y: root.band-top - root.scroll
+                            + (1.0 - root.enter-progress) * root.enter-direction * 42px;
+                        opacity: 0.15 + 0.85 * root.enter-progress;
                         image-fit: fill;
                         image-rendering: pixelated;
                     }
@@ -195,11 +215,24 @@ export component AppWindow inherits Window {
                                 return accept;
                             }
                             if (event.delta-y != 0) {
-                                root.turn-page(event.delta-y < 0 ? 1 : -1);
+                                // Wheel deltas are already in logical pixels;
+                                // Rust clamps and crosses chapters.
+                                root.scroll-by(-event.delta-y);
                                 return accept;
                             }
                             return reject;
                         }
+                    }
+
+                    if has-book && chapter-height > parent.height: Rectangle {
+                        x: parent.width - 7px;
+                        width: 3px;
+                        y: 4px + (parent.height - 8px - self.height) * root.chapter-progress;
+                        height: max(28px, (parent.height - 8px) * root.viewport-fraction);
+                        border-radius: 1.5px;
+                        background: tokens.text;
+                        opacity: focus-mode ? 0.0 : 0.18;
+                        animate opacity { duration: 160ms; }
                     }
 
                     // In focus mode the only chrome left is a hairline of progress.
@@ -248,7 +281,7 @@ export component AppWindow inherits Window {
                         horizontal-stretch: 1;
                     }
                     Text {
-                        text: "page " + (page + 1) + " / " + page-count;
+                        text: Math.round(chapter-progress * 100) + "% of chapter";
                         color: tokens.muted;
                         font-size: 11px;
                         vertical-alignment: center;
