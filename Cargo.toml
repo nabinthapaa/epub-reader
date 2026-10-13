@@ -6,7 +6,7 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/nabin/folio"
+repository = "https://github.com/nabinthapaa/epub-reader"
 
 [workspace.dependencies]
 tracing = "0.1"
