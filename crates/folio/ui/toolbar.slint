@@ -34,7 +34,6 @@ export component Toolbar inherits Rectangle {
         padding-left: 8px;
         padding-right: 8px;
         spacing: 4px;
-        alignment: start;
 
         ToolButton {
             tokens: tokens;
@@ -52,6 +51,7 @@ export component Toolbar inherits Rectangle {
 
         Rectangle {
             horizontal-stretch: 1;
+            min-width: 40px;
             Text {
                 text: title;
                 color: tokens.text;

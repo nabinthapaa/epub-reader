@@ -142,11 +142,18 @@ export component Shelf inherits Rectangle {
     callback open-book(int);
     callback open-file();
 
+    // Tile geometry, pinned: inside a layout a plain width/height is only
+    // advisory, so the tiles have to state minimum and maximum alike or they
+    // collapse to whatever their contents happen to need.
+    private property <length> tile-width: 164px;
+    private property <length> cover-height: 212px;
+    private property <length> tile-height: 288px;
+
     background: tokens.page;
 
     VerticalLayout {
         padding: 36px;
-        spacing: 18px;
+        spacing: 16px;
         alignment: start;
 
         Text {
@@ -154,97 +161,150 @@ export component Shelf inherits Rectangle {
             color: tokens.text;
             font-size: 28px;
             font-weight: 700;
+            vertical-stretch: 0;
         }
 
         Text {
             text: books.length > 0 ? "Continue reading" : "Open an EPUB to start reading";
             color: tokens.muted;
             font-size: 13px;
+            vertical-stretch: 0;
         }
 
-        ScrollView {
-            VerticalLayout {
+        Flickable {
+            min-height: root.tile-height + 12px;
+            max-height: root.tile-height + 12px;
+            viewport-width: (books.length + 1) * (root.tile-width + 16px) + 16px;
+            viewport-height: root.tile-height;
+
+            HorizontalLayout {
+                spacing: 16px;
                 alignment: start;
-                HorizontalLayout {
-                    spacing: 16px;
-                    alignment: start;
 
-                    for book in books: Rectangle {
-                        width: 150px;
-                        height: 250px;
-                        border-radius: 8px;
-                        background: tile.has-hover ? tokens.text.with-alpha(0.06) : transparent;
+                for book in books: Rectangle {
+                    min-width: root.tile-width;
+                    max-width: root.tile-width;
+                    min-height: root.tile-height;
+                    max-height: root.tile-height;
+                    border-radius: 8px;
+                    background: tile.has-hover ? tokens.text.with-alpha(0.07) : transparent;
+                    animate background { duration: 90ms; }
 
-                        VerticalLayout {
-                            padding: 8px;
-                            spacing: 6px;
+                    VerticalLayout {
+                        padding: 8px;
+                        spacing: 8px;
+                        alignment: start;
 
-                            Rectangle {
-                                height: 170px;
-                                border-radius: 4px;
-                                background: tokens.surface;
-                                border-width: 1px;
-                                border-color: tokens.border;
-                                clip: true;
-                                Image {
-                                    source: book.cover;
-                                    width: parent.width;
-                                    height: parent.height;
-                                    image-fit: contain;
-                                }
+                        Rectangle {
+                            min-height: root.cover-height;
+                            max-height: root.cover-height;
+                            border-radius: 4px;
+                            background: tokens.surface;
+                            border-width: 1px;
+                            border-color: tokens.border;
+                            clip: true;
+
+                            if book.cover.width > 0: Image {
+                                source: book.cover;
+                                width: parent.width;
+                                height: parent.height;
+                                image-fit: contain;
                             }
-                            Text {
+                            // Books with no cover get their title instead of a
+                            // blank rectangle.
+                            if book.cover.width == 0: Text {
                                 text: book.title;
-                                color: tokens.text;
-                                font-size: 12px;
-                                font-weight: 600;
-                                wrap: word-wrap;
-                                overflow: elide;
-                                height: 32px;
-                            }
-                            Text {
-                                text: book.progress > 0 ? book.progress + "% · " + book.author : book.author;
                                 color: tokens.muted;
-                                font-size: 11px;
+                                font-size: 13px;
+                                width: parent.width - 20px;
+                                x: 10px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                wrap: word-wrap;
                                 overflow: elide;
                             }
                         }
 
-                        tile := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { open-book(book.index); }
+                        Text {
+                            text: book.title;
+                            color: tokens.text;
+                            font-size: 12px;
+                            font-weight: 600;
+                            wrap: word-wrap;
+                            overflow: elide;
+                            min-height: 32px;
+                            max-height: 32px;
+                        }
+
+                        Text {
+                            text: book.progress > 0
+                                ? book.progress + "% · " + book.author
+                                : book.author;
+                            color: tokens.muted;
+                            font-size: 11px;
+                            overflow: elide;
+                            min-height: 14px;
                         }
                     }
 
-                    Rectangle {
-                        width: 150px;
-                        height: 250px;
-                        border-radius: 8px;
+                    tile := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { open-book(book.index); }
+                    }
+                }
+
+                // Matches the cover box, not the whole tile, so the row of
+                // artwork reads as one band.
+                Rectangle {
+                    min-width: root.tile-width;
+                    max-width: root.tile-width;
+                    min-height: root.tile-height;
+                    max-height: root.tile-height;
+
+                    add-box := Rectangle {
+                        y: 8px;
+                        x: 8px;
+                        width: parent.width - 16px;
+                        height: root.cover-height;
+                        border-radius: 6px;
                         border-width: 1px;
                         border-color: tokens.border;
-                        background: add.has-hover ? tokens.text.with-alpha(0.06) : transparent;
-                        VerticalLayout {
-                            alignment: center;
-                            Text {
-                                text: "+";
-                                color: tokens.muted;
-                                font-size: 30px;
-                                horizontal-alignment: center;
-                            }
-                            Text {
-                                text: "Open file…";
-                                color: tokens.muted;
-                                font-size: 12px;
-                                horizontal-alignment: center;
-                            }
+                        background: add.has-hover ? tokens.text.with-alpha(0.07) : transparent;
+                        animate background { duration: 90ms; }
+                    }
+
+                    VerticalLayout {
+                        y: 8px;
+                        height: root.cover-height;
+                        alignment: center;
+                        spacing: 6px;
+                        Text {
+                            text: "+";
+                            color: tokens.muted;
+                            font-size: 30px;
+                            horizontal-alignment: center;
                         }
-                        add := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { open-file(); }
+                        Text {
+                            text: "Open file…";
+                            color: tokens.muted;
+                            font-size: 12px;
+                            horizontal-alignment: center;
                         }
+                    }
+
+                    add := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { open-file(); }
                     }
                 }
             }
+        }
+
+        Text {
+            text: "Ctrl+O opens a book · drag the shelf sideways for more";
+            color: tokens.muted;
+            font-size: 11px;
+            visible: books.length > 0;
         }
     }
 }

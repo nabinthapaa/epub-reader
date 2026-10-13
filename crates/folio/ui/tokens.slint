@@ -39,8 +39,12 @@ export component ToolButton inherits Rectangle {
     in property <bool> enabled: true;
     callback clicked();
 
-    height: 30px;
-    width: max(34px, label.preferred-width + 18px);
+    // Inside a layout the plain width/height are advisory, so pin the size.
+    min-height: 30px;
+    max-height: 30px;
+    min-width: max(34px, label.preferred-width + 18px);
+    max-width: max(34px, label.preferred-width + 18px);
+    horizontal-stretch: 0;
     border-radius: 6px;
     background: active
         ? tokens.accent.with-alpha(0.18)
