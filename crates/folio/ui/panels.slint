@@ -8,6 +8,18 @@ export component TocPanel inherits Rectangle {
     in property <int> current-index: -1;
     callback activate(int);
 
+    // Called when the panel opens rather than bound to viewport-y: the user's
+    // own scrolling writes that property, which would replace a binding and
+    // leave the panel stuck forever after.
+    public function reveal-current() {
+        if (current-index > 0) {
+            // Rows wrap, so this estimates from an average row height rather
+            // than measuring — close enough to save a hunt in a long book.
+            list.viewport-y = -clamp(current-index * 33px - list.height / 3,
+                0px, max(0px, list.viewport-height - list.height));
+        }
+    }
+
     width: 260px;
     background: tokens.surface;
 
@@ -29,17 +41,10 @@ export component TocPanel inherits Rectangle {
             letter-spacing: 0.6px;
         }
 
-        ScrollView {
+        list := ScrollView {
             // The panel already has a border; the widget scrollbar draws a
             // second vertical line 15px inside it.
             vertical-scrollbar-policy: ScrollBarPolicy.always-off;
-            // Put the current entry about a third of the way down. Rows wrap,
-            // so this is an estimate from the average row height rather than a
-            // measurement — close enough to save a hunt in a 135-entry book.
-            viewport-y: current-index <= 0
-                ? 0
-                : -clamp(current-index * 33px - self.height / 3, 0px,
-                         max(0px, self.viewport-height - self.height));
             VerticalLayout {
                 spacing: 1px;
                 for row in rows: Rectangle {
@@ -94,6 +99,9 @@ export component SearchPanel inherits Rectangle {
     background: tokens.surface;
 
     Rectangle {
+        // Without an x, Slint centres a child whose size is set but whose
+        // position is not: the divider was running down the panel's middle.
+        x: 0;
         width: 1px;
         background: tokens.border;
     }
@@ -325,6 +333,10 @@ export component Shelf inherits Rectangle {
                     }
 
                     add := TouchArea {
+                        x: 8px;
+                        y: 8px;
+                        width: parent.width - 16px;
+                        height: root.cover-height;
                         mouse-cursor: pointer;
                         clicked => { open-file(); }
                     }
@@ -423,14 +435,40 @@ export component SettingsPanel inherits Rectangle {
         }
 
         // The installed family, with the list folded away until asked for: a
-        // dropdown from the widget library would paint itself off-theme.
-        ToolButton {
-            tokens: tokens;
-            text: families.length > family-index && family-index >= 0
-                ? families[family-index]
-                : "System serif";
-            active: picking-family;
-            clicked => { picking-family = !picking-family; }
+        // dropdown from the widget library would paint itself off-theme. Shaped
+        // like the search field so it reads as a control, not a label.
+        Rectangle {
+            min-height: 32px;
+            max-height: 32px;
+            border-radius: 6px;
+            background: tokens.page;
+            border-width: 1px;
+            border-color: picking-family ? tokens.accent : tokens.border;
+
+            Text {
+                x: 10px;
+                width: parent.width - 34px;
+                height: parent.height;
+                text: families.length > family-index && family-index >= 0
+                    ? families[family-index]
+                    : "System serif";
+                color: tokens.text;
+                font-size: 12px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Text {
+                x: parent.width - 22px;
+                height: parent.height;
+                text: "▾";
+                color: tokens.muted;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { picking-family = !picking-family; }
+            }
         }
 
         if picking-family: Rectangle {
@@ -484,25 +522,31 @@ export component SettingsPanel inherits Rectangle {
                 font-size: 12px;
                 vertical-alignment: center;
             }
-            HorizontalLayout {
-                spacing: 4px;
-                ToolButton {
-                    tokens: tokens;
-                    text: "−";
-                    clicked => { set-measure(measure - 5); }
-                }
-                Text {
-                    text: measure + " ch";
-                    color: tokens.muted;
-                    font-size: 12px;
-                    vertical-alignment: center;
-                    width: 44px;
-                    horizontal-alignment: center;
-                }
-                ToolButton {
-                    tokens: tokens;
-                    text: "+";
-                    clicked => { set-measure(measure + 5); }
+            // One segmented control, matching the toolbar's zoom group.
+            Rectangle {
+                width: measure-row.preferred-width;
+                border-radius: 6px;
+                background: tokens.text.with-alpha(0.05);
+                measure-row := HorizontalLayout {
+                    spacing: 0px;
+                    ToolButton {
+                        tokens: tokens;
+                        text: "−";
+                        clicked => { set-measure(measure - 5); }
+                    }
+                    Text {
+                        text: measure + " ch";
+                        color: tokens.muted;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        width: 48px;
+                        horizontal-alignment: center;
+                    }
+                    ToolButton {
+                        tokens: tokens;
+                        text: "+";
+                        clicked => { set-measure(measure + 5); }
+                    }
                 }
             }
         }
@@ -521,10 +565,30 @@ export component SettingsPanel inherits Rectangle {
             toggled(on) => { set-spotlight(on); }
         }
 
-        Text {
-            text: "Keyboard shortcuts   ?";
-            color: tokens.muted;
-            font-size: 11px;
+        HorizontalLayout {
+            spacing: 7px;
+            alignment: start;
+            Text {
+                text: "Keyboard shortcuts";
+                color: tokens.muted;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+            Rectangle {
+                width: 17px;
+                height: 17px;
+                border-radius: 4px;
+                background: tokens.text.with-alpha(0.08);
+                Text {
+                    text: "?";
+                    color: tokens.muted;
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: parent.width;
+                    height: parent.height;
+                }
+            }
         }
     }
 }

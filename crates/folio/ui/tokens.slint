@@ -128,11 +128,18 @@ export component ThemedCheck inherits Rectangle {
 
     min-height: 26px;
     max-height: 26px;
-    border-radius: 5px;
-    background: touch.has-hover ? tokens.text.with-alpha(0.05) : transparent;
+
+    // The hover tint spills a little past the row so the control still has a
+    // target shape, without pushing the checkbox's ink out of alignment.
+    Rectangle {
+        x: -5px;
+        width: parent.width + 10px;
+        height: parent.height;
+        border-radius: 5px;
+        background: touch.has-hover ? tokens.text.with-alpha(0.05) : transparent;
+    }
 
     HorizontalLayout {
-        padding-left: 4px;
         padding-right: 4px;
         spacing: 9px;
         alignment: start;
@@ -172,6 +179,51 @@ export component ThemedCheck inherits Rectangle {
     }
 }
 
+// Two real columns: padding a single string with spaces goes ragged in a
+// proportional font, which defeats the point of a card you scan.
+component ShortcutGroup inherits HorizontalLayout {
+    in property <Tokens> tokens;
+    in property <string> title;
+    in property <[string]> keys;
+    in property <[string]> actions;
+
+    spacing: 14px;
+
+    VerticalLayout {
+        spacing: 9px;
+        alignment: start;
+        Text {
+            text: title;
+            color: tokens.muted;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.6px;
+        }
+        for key in keys: Text {
+            text: key;
+            color: tokens.text;
+            font-size: 12px;
+            font-weight: 600;
+            min-height: 17px;
+        }
+    }
+
+    VerticalLayout {
+        spacing: 9px;
+        alignment: start;
+        Text {
+            text: " ";
+            font-size: 11px;
+        }
+        for action in actions: Text {
+            text: action;
+            color: tokens.muted;
+            font-size: 12px;
+            min-height: 17px;
+        }
+    }
+}
+
 // The shortcuts card. Nearly everything Folio can do is a keypress, and until
 // now the only hints were two muted one-liners.
 export component Shortcuts inherits Rectangle {
@@ -184,7 +236,7 @@ export component Shortcuts inherits Rectangle {
     Rectangle {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        width: 560px;
+        width: 580px;
         height: card.preferred-height;
         background: tokens.surface;
         border-width: 1px;
@@ -196,7 +248,7 @@ export component Shortcuts inherits Rectangle {
 
         card := VerticalLayout {
             padding: 24px;
-            spacing: 14px;
+            spacing: 16px;
             alignment: start;
 
             Text {
@@ -207,43 +259,29 @@ export component Shortcuts inherits Rectangle {
             }
 
             HorizontalLayout {
-                spacing: 28px;
+                spacing: 32px;
 
-                VerticalLayout {
-                    spacing: 7px;
-                    Text {
-                        text: "READING";
-                        color: tokens.muted;
-                        font-size: 11px;
-                        font-weight: 600;
-                        letter-spacing: 0.6px;
-                    }
-                    Text { text: "Space / PgDn      scroll a screen"; color: tokens.text; font-size: 12px; }
-                    Text { text: "↑ ↓ or k j        scroll a step"; color: tokens.text; font-size: 12px; }
-                    Text { text: "n / p             next / previous chapter"; color: tokens.text; font-size: 12px; }
-                    Text { text: "Home              top of the chapter"; color: tokens.text; font-size: 12px; }
-                    Text { text: "Backspace         back after a link"; color: tokens.text; font-size: 12px; }
+                ShortcutGroup {
+                    tokens: tokens;
+                    title: "READING";
+                    keys: ["Space  PgDn", "↑ ↓   k j", "n   p", "Home", "Backspace"];
+                    actions: ["scroll a screen", "scroll a step",
+                              "previous · next chapter", "top of the chapter",
+                              "back after a link"];
                 }
 
-                VerticalLayout {
-                    spacing: 7px;
-                    Text {
-                        text: "VIEW";
-                        color: tokens.muted;
-                        font-size: 11px;
-                        font-weight: 600;
-                        letter-spacing: 0.6px;
-                    }
-                    Text { text: "f                 focus mode"; color: tokens.text; font-size: 12px; }
-                    Text { text: "s                 spotlight a paragraph"; color: tokens.text; font-size: 12px; }
-                    Text { text: "t                 cycle theme"; color: tokens.text; font-size: 12px; }
-                    Text { text: "Ctrl + / − / 0    zoom in, out, reset"; color: tokens.text; font-size: 12px; }
-                    Text { text: "c  /  /           contents · search"; color: tokens.text; font-size: 12px; }
+                ShortcutGroup {
+                    tokens: tokens;
+                    title: "VIEW";
+                    keys: ["f", "s", "t", "Ctrl + − 0", "c", "/"];
+                    actions: ["focus mode", "spotlight a paragraph",
+                              "cycle theme", "zoom in, out, reset",
+                              "contents", "search"];
                 }
             }
 
             Text {
-                text: "Esc backs out one layer at a time and ends at the shelf · Ctrl+O opens a book · Ctrl+W puts it away";
+                text: "Esc backs out one layer at a time and ends at the shelf  ·  Ctrl+O opens a book  ·  Ctrl+W puts it away";
                 color: tokens.muted;
                 font-size: 11px;
                 wrap: word-wrap;
@@ -251,3 +289,4 @@ export component Shortcuts inherits Rectangle {
         }
     }
 }
+

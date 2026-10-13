@@ -128,6 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_family_index(1);
         }
         "focus" => ui.set_focus_mode(true),
+        "shortcuts" => ui.set_shortcuts_open(true),
         _ => {}
     }
 
@@ -159,8 +160,10 @@ fn load_book(
     if focus {
         reader.apply(Command::SetFocus(true))?;
     }
-    // A few screens in, so the shot shows prose rather than a title page.
-    let view = reader.apply(Command::ScrollScreens(4.0))?;
+    // Into real prose rather than the front matter: scroll past the title
+    // page's own chapter first, then a few screens in.
+    reader.apply(Command::Chapter(2))?;
+    let view = reader.apply(Command::ScrollScreens(6.0))?;
     println!(
         "body family: {} · font_px {} · column from viewport {}x{}",
         reader.body_family(),

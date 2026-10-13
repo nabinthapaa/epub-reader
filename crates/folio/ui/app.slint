@@ -100,6 +100,11 @@ export component AppWindow inherits Window {
         keys.focus();
     }
 
+    // Reveal the current entry when the panel opens, not on every frame.
+    changed toc-open => {
+        if (self.toc-open) { toc-panel.reveal-current(); }
+    }
+
     keys := FocusScope {
         key-pressed(event) => {
             // Escape backs out of whatever is open, innermost first.
@@ -196,7 +201,7 @@ export component AppWindow inherits Window {
             }
 
             HorizontalLayout {
-                TocPanel {
+                toc-panel := TocPanel {
                     visible: toc-open && !focus-mode && has-book;
                     width: (toc-open && !focus-mode && has-book) ? 260px : 0px;
                     tokens: tokens;
@@ -204,6 +209,14 @@ export component AppWindow inherits Window {
                     current-index: toc-index;
                     activate(index) => { goto-toc(index); keys.focus(); }
                 }
+
+                // Focus mode letterboxes the page: the text stops touching the
+                // window's edges, which is most of what makes it feel like a
+                // different mode rather than the same screen with less on it.
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    padding-top: focus-mode ? 44px : 0px;
+                    padding-bottom: focus-mode ? 52px : 0px;
 
                 reader-area := Rectangle {
                     horizontal-stretch: 1;
@@ -237,7 +250,7 @@ export component AppWindow inherits Window {
                     }
 
                     if has-book: TouchArea {
-                        mouse-cursor: default;
+                        mouse-cursor: pointer;
                         clicked => {
                             page-clicked(self.mouse-x, self.mouse-y);
                             keys.focus();
@@ -270,7 +283,9 @@ export component AppWindow inherits Window {
                             width: 4px;
                             height: parent.height - 8px;
                             border-radius: 2px;
-                            background: tokens.text.with-alpha(0.06);
+                            // A text-alpha this low vanishes on a light page;
+                            // border is already tuned for each palette.
+                            background: tokens.border;
                         }
 
                         thumb := Rectangle {
@@ -279,8 +294,8 @@ export component AppWindow inherits Window {
                             y: 4px + (parent.height - 8px - self.height) * root.chapter-progress;
                             height: max(32px, (parent.height - 8px) * root.viewport-fraction);
                             border-radius: 2px;
-                            background: tokens.text;
-                            opacity: (bar.has-hover || bar.pressed) ? 0.5 : 0.26;
+                            background: tokens.muted;
+                            opacity: (bar.has-hover || bar.pressed) ? 0.8 : 0.45;
                             animate opacity { duration: 140ms; }
                         }
 
@@ -322,7 +337,7 @@ export component AppWindow inherits Window {
                         x: 0;
                         width: parent.width;
                         height: 2px;
-                        background: tokens.text.with-alpha(0.07);
+                        background: tokens.border;
                         Rectangle {
                             x: 0;
                             width: parent.width * progress;
@@ -330,6 +345,8 @@ export component AppWindow inherits Window {
                             background: tokens.muted.with-alpha(0.5);
                         }
                     }
+                }
+
                 }
 
                 search-panel := SearchPanel {
@@ -356,25 +373,66 @@ export component AppWindow inherits Window {
                 }
 
                 HorizontalLayout {
-                    padding-left: 12px;
+                    padding-left: 10px;
                     padding-right: 12px;
-                    spacing: 12px;
+                    spacing: 10px;
 
+                    // Chapter stepper: n/p were bound but had no affordance at
+                    // all, so changing chapter meant hunting a 135-row list.
+                    step-back := Rectangle {
+                        width: 18px;
+                        border-radius: 4px;
+                        background: back-touch.has-hover
+                            ? tokens.text.with-alpha(0.08) : transparent;
+                        Text {
+                            text: "‹";
+                            color: tokens.muted;
+                            font-size: 13px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: parent.width;
+                            height: parent.height;
+                        }
+                        back-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { jump-chapter(-1); }
+                        }
+                    }
                     Text {
                         text: chapter-label;
                         color: tokens.muted;
                         font-size: 11px;
                         vertical-alignment: center;
                         overflow: elide;
-                        horizontal-stretch: 1;
+                    }
+                    Rectangle {
+                        width: 18px;
+                        border-radius: 4px;
+                        background: next-touch.has-hover
+                            ? tokens.text.with-alpha(0.08) : transparent;
+                        Text {
+                            text: "›";
+                            color: tokens.muted;
+                            font-size: 13px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: parent.width;
+                            height: parent.height;
+                        }
+                        next-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { jump-chapter(1); }
+                        }
                     }
                     Text {
-                        // What a reader actually wants to know. The scrollbar
-                        // already shows position within the chapter.
-                        text: minutes-left > 0 ? "~" + minutes-left + " min left" : "";
+                        // Scoped, because the bar beside it is book-scoped and
+                        // "~83 min left" alone reads as "left in the book".
+                        text: minutes-left > 0
+                            ? "·   ~" + minutes-left + " min left in chapter" : "";
                         color: tokens.muted;
                         font-size: 11px;
                         vertical-alignment: center;
+                        horizontal-stretch: 1;
                     }
                     Rectangle {
                         width: 90px;

@@ -116,7 +116,10 @@ impl Theme {
                 preset,
                 page: Color::rgb(0xFC, 0xFC, 0xFA),
                 surface: Color::rgb(0xF1, 0xF0, 0xEC),
-                text: Color::rgb(0x1E, 0x1E, 0x1C),
+                // 13.2:1 rather than 16.2:1. Near-black on near-white is the
+                // glare case on light that the dark palette was tuned away
+                // from; this is the zone the dedicated readers sit in.
+                text: Color::rgb(0x2E, 0x2E, 0x2B),
                 muted: Color::rgb(0x6B, 0x6B, 0x66),
                 accent: Color::rgb(0x33, 0x5C, 0x81),
                 link: Color::rgb(0x1F, 0x56, 0x8C),

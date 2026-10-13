@@ -38,8 +38,12 @@ export component Toolbar inherits Rectangle {
     }
 
     if has-book: HorizontalLayout {
-        x: (parent.width - self.preferred-width) / 2;
-        width: min(self.preferred-width, parent.width - 620px);
+        x: (parent.width - self.width) / 2;
+        // Clear whichever cluster is wider, on both sides, so a long title can
+        // never slide under a control.
+        width: min(self.preferred-width,
+            max(120px, parent.width - 2 * max(left-cluster.preferred-width,
+                                              right-cluster.preferred-width) - 32px));
         height: parent.height;
         spacing: 0px;
 
@@ -70,40 +74,44 @@ export component Toolbar inherits Rectangle {
         padding-bottom: 8px;
         spacing: 4px;
 
-        ToolButton {
+        left-cluster := HorizontalLayout {
+            spacing: 4px;
+        if has-book: ToolButton {
             tokens: tokens;
             text: "Contents";
             active: toc-open;
-            visible: has-book;
             clicked => { toggle-toc(); }
         }
-        ToolButton {
+        if has-book: ToolButton {
             tokens: tokens;
             text: "Shelf";
-            visible: has-book;
             clicked => { close-book(); }
         }
-        ToolButton {
+        if can-go-back: ToolButton {
             tokens: tokens;
             text: "←";
-            visible: can-go-back;
             clicked => { back(); }
+        }
+
         }
 
         // The gap the title is centred over.
         Rectangle { horizontal-stretch: 1; min-width: 40px; }
 
-        ToolButton {
+        right-cluster := HorizontalLayout {
+            spacing: 4px;
+
+        if has-book: ToolButton {
             tokens: tokens;
             text: "Find";
             active: search-open;
-            visible: has-book;
             clicked => { toggle-search(); }
         }
 
         // One zoom control, not three floating chips. The middle is the reset.
         if has-book: Rectangle {
             width: zoom-row.preferred-width;
+            horizontal-stretch: 0;
             border-radius: 6px;
             background: tokens.text.with-alpha(0.05);
             zoom-row := HorizontalLayout {
@@ -126,10 +134,9 @@ export component Toolbar inherits Rectangle {
             }
         }
 
-        ToolButton {
+        if has-book: ToolButton {
             tokens: tokens;
             text: "Focus";
-            visible: has-book;
             clicked => { toggle-focus(); }
         }
         ToolButton {
@@ -138,11 +145,11 @@ export component Toolbar inherits Rectangle {
             active: settings-open;
             clicked => { toggle-settings(); }
         }
-        ToolButton {
+        if !has-book: ToolButton {
             tokens: tokens;
             text: "Open";
-            visible: !has-book;
             clicked => { open-file(); }
+        }
         }
     }
 }
