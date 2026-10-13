@@ -225,6 +225,26 @@ fn the_window_responds_to_keys_and_panels() {
         assert_eq!(taken(&log), vec!["open-file"]);
     }
 
+    // --- the shortcuts card opens and backs out first ---
+    {
+        let (ui, log) = app();
+
+        press(&ui, "?");
+        assert!(ui.get_shortcuts_open(), "? opens the card");
+
+        // While it is open it swallows keys rather than scrolling behind it.
+        press(&ui, Key::RightArrow);
+        assert!(taken(&log).is_empty(), "the card holds focus");
+        assert!(!ui.get_shortcuts_open(), "and any key dismisses it");
+
+        // Escape closes it before anything else.
+        ui.set_shortcuts_open(true);
+        ui.set_toc_open(true);
+        press(&ui, Key::Escape);
+        assert!(!ui.get_shortcuts_open());
+        assert!(ui.get_toc_open(), "the contents panel is still open");
+    }
+
     // --- the shelf is reachable from a book ---
     {
         let (ui, log) = app();

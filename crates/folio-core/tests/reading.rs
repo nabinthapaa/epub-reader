@@ -307,6 +307,53 @@ fn contents_entries_jump_to_their_anchor() {
 }
 
 #[test]
+fn progress_is_weighted_by_how_long_each_chapter_is() {
+    // A title page and a long chapter: counting spine entries would call the
+    // start of the second chapter "half way through the book".
+    let long = support::paragraphs(60);
+    let mut reader = reader_with(vec![
+        ("title.xhtml", "<h1>A Title Page</h1>"),
+        ("one.xhtml", long.as_str()),
+    ]);
+
+    let start = reader.apply(Command::Refresh).unwrap();
+    assert!(start.progress < 0.02, "the very start of the book");
+
+    let second = reader.apply(Command::Chapter(1)).unwrap();
+    assert_eq!(second.chapter, 1);
+    assert!(
+        second.progress < 0.2,
+        "a title page is a sliver of the book, not half of it: got {}",
+        second.progress
+    );
+
+    let end = reader.apply(Command::ScrollTo(1.0)).unwrap();
+    assert!(end.progress > 0.9, "the end of the last chapter is the end");
+    assert!(end.progress <= 1.0);
+}
+
+#[test]
+fn the_time_left_shrinks_as_the_chapter_is_read() {
+    let long = support::paragraphs(80);
+    let mut reader = reader_with(vec![("one.xhtml", long.as_str())]);
+
+    let start = reader.apply(Command::Refresh).unwrap();
+    let at_start = start.minutes_left.expect("a long chapter takes minutes");
+
+    let later = reader.apply(Command::ScrollTo(0.8)).unwrap();
+    // Under a minute left is reported as nothing at all, which is also fine.
+    if let Some(minutes) = later.minutes_left {
+        assert!(
+            minutes < at_start,
+            "four fifths in should be quicker than the start: {minutes} vs {at_start}"
+        );
+    }
+
+    let end = reader.apply(Command::ScrollTo(1.0)).unwrap();
+    assert_eq!(end.minutes_left, None, "nothing left to say at the end");
+}
+
+#[test]
 fn themes_change_pixels_without_moving_the_text() {
     let mut reader = reader_with(vec![("one.xhtml", "<p>some words to paint</p>")]);
     let light = reader
