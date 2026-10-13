@@ -87,6 +87,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "search" => 300,
             _ => 0,
         };
+        // Focus mode narrows the measure, which happens in the reader, not in
+        // the chrome: the scene has to be rendered with it on or the shot shows
+        // the wrong line length.
+        let focus = scene == "focus";
         let path = book
             .or_else(|| {
                 Store::new()
@@ -94,7 +98,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .and_then(|store| store.load_recents().first().map(|b| PathBuf::from(&b.path)))
             })
             .ok_or("no book to render: pass one as the last argument")?;
-        load_book(&ui, &path, theme, (width - panel, height))?;
+        load_book(&ui, &path, theme, (width - panel, height), focus)?;
     }
 
     match scene.as_str() {
@@ -147,10 +151,14 @@ fn load_book(
     path: &Path,
     theme: Theme,
     viewport: (u32, u32),
+    focus: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let settings = Settings::default();
     let mut reader = Reader::open(path, &settings, theme.preset, viewport, None)?;
     reader.apply(Command::SetTheme(theme))?;
+    if focus {
+        reader.apply(Command::SetFocus(true))?;
+    }
     // A few screens in, so the shot shows prose rather than a title page.
     let view = reader.apply(Command::ScrollScreens(4.0))?;
     println!(
