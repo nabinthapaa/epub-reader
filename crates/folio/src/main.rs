@@ -330,6 +330,7 @@ impl App {
         ui.set_can_go_back(frame.can_go_back);
         ui.set_font_px(frame.font_px.round() as i32);
         ui.set_toc(bridge::toc_rows(&self.toc.borrow(), frame.toc_index));
+        ui.set_toc_index(frame.toc_index.map(|i| i as i32).unwrap_or(-1));
         self.settings.borrow_mut().type_settings.font_px = frame.font_px;
         self.chapter.set(frame.chapter);
 
@@ -477,6 +478,9 @@ fn wire_callbacks(ui: &AppWindow, app: &Rc<App>) {
     });
     on!(on_scroll_steps, |app: Rc<App>| move |steps: i32| {
         app.command(Command::ScrollSteps(steps as f32));
+    });
+    on!(on_scroll_to, |app: Rc<App>| move |fraction: f32| {
+        app.command(Command::ScrollTo(fraction));
     });
     on!(on_jump_chapter, |app: Rc<App>| move |delta: i32| {
         if delta == 0 {

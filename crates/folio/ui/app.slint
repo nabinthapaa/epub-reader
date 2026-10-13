@@ -40,6 +40,8 @@ export component AppWindow inherits Window {
     /// Rough minutes left in the chapter; 0 means "not worth saying".
     in property <int> minutes-left;
     in property <[TocRow]> toc;
+    /// Row the reader is inside, so the panel can scroll it into view.
+    in property <int> toc-index: -1;
     in property <[SearchRow]> search-results;
     in property <[ShelfRow]> shelf;
     in property <bool> searching;
@@ -62,6 +64,7 @@ export component AppWindow inherits Window {
     callback scroll-by(length);
     callback scroll-screens(int);
     callback scroll-steps(int);
+    callback scroll-to(float);
     callback jump-chapter(int);
     callback goto-toc(int);
     callback goto-search(int);
@@ -198,6 +201,7 @@ export component AppWindow inherits Window {
                     width: (toc-open && !focus-mode && has-book) ? 260px : 0px;
                     tokens: tokens;
                     rows: toc;
+                    current-index: toc-index;
                     activate(index) => { goto-toc(index); keys.focus(); }
                 }
 
@@ -253,15 +257,48 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    if has-book && chapter-height > parent.height: Rectangle {
-                        x: parent.width - 7px;
-                        width: 3px;
-                        y: 4px + (parent.height - 8px - self.height) * root.chapter-progress;
-                        height: max(28px, (parent.height - 8px) * root.viewport-fraction);
-                        border-radius: 1.5px;
-                        background: tokens.text;
-                        opacity: focus-mode ? 0.0 : 0.18;
-                        animate opacity { duration: 160ms; }
+                    // A scrollbar with a track, so the chapter's extent is
+                    // legible, and a hit strip wide enough to grab.
+                    if has-book && chapter-height > parent.height && !focus-mode: Rectangle {
+                        x: parent.width - 14px;
+                        width: 14px;
+                        height: parent.height;
+
+                        Rectangle {
+                            x: 5px;
+                            y: 4px;
+                            width: 4px;
+                            height: parent.height - 8px;
+                            border-radius: 2px;
+                            background: tokens.text.with-alpha(0.06);
+                        }
+
+                        thumb := Rectangle {
+                            x: 5px;
+                            width: 4px;
+                            y: 4px + (parent.height - 8px - self.height) * root.chapter-progress;
+                            height: max(32px, (parent.height - 8px) * root.viewport-fraction);
+                            border-radius: 2px;
+                            background: tokens.text;
+                            opacity: (bar.has-hover || bar.pressed) ? 0.5 : 0.26;
+                            animate opacity { duration: 140ms; }
+                        }
+
+                        bar := TouchArea {
+                            mouse-cursor: default;
+                            moved => {
+                                if (self.pressed) {
+                                    root.scroll-to((self.mouse-y - thumb.height / 2)
+                                        / max(1px, parent.height - thumb.height));
+                                }
+                            }
+                            pointer-event(event) => {
+                                if (event.kind == PointerEventKind.down) {
+                                    root.scroll-to((self.mouse-y - thumb.height / 2)
+                                        / max(1px, parent.height - thumb.height));
+                                }
+                            }
+                        }
                     }
 
                     // Lines are cut by the viewport edges; fading them says

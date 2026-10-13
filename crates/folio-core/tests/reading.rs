@@ -73,6 +73,26 @@ fn scrolling_is_continuous_until_the_chapter_ends() {
 }
 
 #[test]
+fn dragging_the_scrollbar_lands_where_it_says() {
+    let long = support::paragraphs(60);
+    let mut reader = reader_with(vec![("one.xhtml", long.as_str())]);
+
+    let middle = reader.apply(Command::ScrollTo(0.5)).unwrap();
+    let max = middle.chapter_height - middle.viewport_height;
+    assert!((middle.scroll - max * 0.5).abs() < 1.0, "half way down");
+
+    let end = reader.apply(Command::ScrollTo(1.0)).unwrap();
+    assert!((end.scroll - max).abs() < 1.0, "the very end");
+
+    // Out-of-range fractions clamp rather than crossing chapters.
+    let clamped = reader.apply(Command::ScrollTo(9.0)).unwrap();
+    assert_eq!(clamped.chapter, 0);
+    assert!((clamped.scroll - max).abs() < 1.0);
+    let start = reader.apply(Command::ScrollTo(-3.0)).unwrap();
+    assert_eq!(start.scroll, 0.0);
+}
+
+#[test]
 fn the_start_of_the_book_does_not_move() {
     let mut reader = reader_with(vec![("one.xhtml", "<p>only</p>")]);
     let view = reader.apply(Command::Scroll(-500.0)).unwrap();

@@ -64,6 +64,8 @@ pub enum Command {
     ScrollScreens(f32),
     /// Scroll by one arrow-key step.
     ScrollSteps(f32),
+    /// Jump to a fraction of the chapter, for dragging the scrollbar.
+    ScrollTo(f32),
     /// Jump whole chapters.
     Chapter(i32),
     GoTo(Position),
@@ -313,6 +315,11 @@ impl Reader {
             Command::ScrollSteps(steps) => {
                 let step = self.content_height() * LINE_STEP;
                 self.scroll_by(steps * step)?;
+            }
+            Command::ScrollTo(fraction) => {
+                let max = self.max_scroll()?;
+                self.cursor.scroll = (fraction.clamp(0.0, 1.0) * max).clamp(0.0, max);
+                self.spotlight_block = self.first_visible_block();
             }
             Command::Chapter(delta) => {
                 let target = (self.cursor.chapter as i64 + delta as i64)

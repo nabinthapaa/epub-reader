@@ -5,6 +5,7 @@ import { ScrollView } from "std-widgets.slint";
 export component TocPanel inherits Rectangle {
     in property <Tokens> tokens;
     in property <[TocRow]> rows;
+    in property <int> current-index: -1;
     callback activate(int);
 
     width: 260px;
@@ -32,6 +33,13 @@ export component TocPanel inherits Rectangle {
             // The panel already has a border; the widget scrollbar draws a
             // second vertical line 15px inside it.
             vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+            // Put the current entry about a third of the way down. Rows wrap,
+            // so this is an estimate from the average row height rather than a
+            // measurement — close enough to save a hunt in a 135-entry book.
+            viewport-y: current-index <= 0
+                ? 0
+                : -clamp(current-index * 33px - self.height / 3, 0px,
+                         max(0px, self.viewport-height - self.height));
             VerticalLayout {
                 spacing: 1px;
                 for row in rows: Rectangle {
