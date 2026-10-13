@@ -333,12 +333,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|store| store.load_recents())
         .unwrap_or_default();
 
-    // Wayland and X11 use this to match the window to folio.desktop.
+    let ui = AppWindow::new()?;
+    // Wayland and X11 match the window to folio.desktop through this; it has to
+    // be set after the platform exists but before the window is shown.
     if let Err(error) = slint::set_xdg_app_id("folio") {
         tracing::warn!(%error, "could not set the XDG app id");
     }
-
-    let ui = AppWindow::new()?;
     let preset = settings.theme.resolve(ui.get_system_dark());
 
     let app = Rc::new_cyclic(|me: &std::rc::Weak<App>| App {
