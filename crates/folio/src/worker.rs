@@ -43,6 +43,8 @@ pub enum Job {
     },
     /// Ask for the list of installed font families.
     Fonts,
+    /// Put the book away: save where we were and go back to the shelf.
+    CloseBook,
     /// Flush the reading position to disk now.
     Flush,
     Shutdown,
@@ -119,6 +121,10 @@ pub enum Event {
     SearchDone {
         generation: u64,
         hits: Vec<SearchHit>,
+    },
+    /// The book was put away; the shelf should show these entries.
+    Closed {
+        recents: Vec<RecentBook>,
     },
     Fonts {
         families: Vec<String>,
@@ -197,6 +203,18 @@ fn run(receiver: Receiver<Job>, emit: impl Fn(Event)) {
                 break;
             }
             Job::Flush => flush(&mut state, true),
+            Job::CloseBook => {
+                flush(&mut state, true);
+                // Dropping the reader frees its layouts, fonts and decoded
+                // images; reopening re-reads the book from its saved position.
+                state.reader = None;
+                let recents = state
+                    .store
+                    .as_ref()
+                    .map(|store| store.load_recents())
+                    .unwrap_or_default();
+                emit(Event::Closed { recents });
+            }
             Job::Open {
                 generation,
                 path,

@@ -94,6 +94,29 @@ impl App {
         });
     }
 
+    /// Put the book away and show the shelf again.
+    fn close_book(&self) {
+        if !self.has_book.get() {
+            return;
+        }
+        self.has_book.set(false);
+        self.worker.send(Job::CloseBook);
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_has_book(false);
+            ui.set_book_title("Folio".into());
+            ui.set_search_open(false);
+            ui.set_settings_open(false);
+            ui.set_can_go_back(false);
+            ui.invoke_focus_reader();
+        }
+        self.links.borrow_mut().clear();
+        self.toc.borrow_mut().clear();
+        self.hits.borrow_mut().clear();
+        *self.frame.borrow_mut() = None;
+        self.scroll_timer.borrow_mut().take();
+        self.transition_timer.borrow_mut().take();
+    }
+
     fn apply_theme(&self, preset: ThemePreset) {
         self.preset.set(preset);
         let theme = Theme::new(preset);
@@ -611,6 +634,9 @@ fn wire_callbacks(ui: &AppWindow, app: &Rc<App>) {
         }
         app.apply_theme(preset);
     });
+    on!(on_close_book, |app: Rc<App>| move || {
+        app.close_book();
+    });
     on!(on_quit, |app: Rc<App>| move || {
         app.save_settings();
         app.worker.send(Job::Flush);
@@ -627,7 +653,8 @@ fn handle_event(app: &Rc<App>, event: Event) {
         | Event::Frame { generation, .. }
         | Event::SearchDone { generation, .. }
         | Event::Failed { generation, .. } => *generation,
-        Event::Fonts { .. } => u64::MAX,
+        // Neither belongs to a particular book.
+        Event::Fonts { .. } | Event::Closed { .. } => u64::MAX,
     };
     if generation < app.book_generation.get() {
         tracing::debug!(generation, "dropping stale worker event");
@@ -660,6 +687,16 @@ fn handle_event(app: &Rc<App>, event: Event) {
                 ui.set_searching(false);
             }
             *app.hits.borrow_mut() = hits;
+        }
+        Event::Closed { recents } => {
+            // The shelf shows where each book was left, so it is refreshed
+            // from the store once the position has been written.
+            if let Some(ui) = app.ui.upgrade()
+                && let Some(store) = &app.store
+            {
+                ui.set_shelf(bridge::shelf_rows(&recents, &store.covers_dir()));
+            }
+            *app.recents.borrow_mut() = recents;
         }
         Event::Fonts { families, current } => {
             if let Some(ui) = app.ui.upgrade() {

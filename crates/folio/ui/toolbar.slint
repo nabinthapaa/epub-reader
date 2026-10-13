@@ -19,6 +19,7 @@ export component Toolbar inherits Rectangle {
     callback zoom-reset();
     callback toggle-focus();
     callback toggle-settings();
+    callback close-book();
     callback back();
 
     height: 46px;
@@ -41,6 +42,12 @@ export component Toolbar inherits Rectangle {
             active: toc-open;
             enabled: has-book;
             clicked => { toggle-toc(); }
+        }
+        ToolButton {
+            tokens: tokens;
+            text: "Shelf";
+            visible: has-book;
+            clicked => { close-book(); }
         }
         ToolButton {
             tokens: tokens;

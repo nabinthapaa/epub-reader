@@ -53,6 +53,7 @@ fn app() -> (AppWindow, Log) {
     record!(on_cycle_theme, "cycle-theme");
     record!(on_back, "back");
     record!(on_open_file, "open-file");
+    record!(on_close_book, "close-book");
 
     ui.invoke_focus_reader();
     (ui, log)
@@ -189,6 +190,11 @@ fn the_window_responds_to_keys_and_panels() {
         ui.set_focus_mode(false);
         press(&ui, Key::Escape);
         assert!(!ui.get_toc_open(), "then the contents panel closes");
+
+        // With nothing left to close, Escape goes home to the shelf.
+        taken(&log);
+        press(&ui, Key::Escape);
+        assert_eq!(taken(&log), vec!["close-book"]);
     }
 
     // --- panel keys toggle the side panels ---
@@ -217,6 +223,20 @@ fn the_window_responds_to_keys_and_panels() {
         // Opening a file still works.
         press_with_control(&ui, "o");
         assert_eq!(taken(&log), vec!["open-file"]);
+    }
+
+    // --- the shelf is reachable from a book ---
+    {
+        let (ui, log) = app();
+
+        press_with_control(&ui, "w");
+        assert_eq!(taken(&log), vec!["close-book"], "Ctrl+W puts the book away");
+
+        // And once there is no book, it does nothing rather than firing again.
+        ui.set_has_book(false);
+        press_with_control(&ui, "w");
+        press(&ui, Key::Escape);
+        assert!(taken(&log).is_empty(), "already on the shelf");
     }
 
     // --- status values render from the pushed state ---

@@ -59,7 +59,8 @@ folio ~/books/moby.epub    # opens a book
 | `t` | Cycle theme |
 | `Ctrl` `+` / `-` / `0` | Zoom in, out, reset · `Ctrl`+scroll works too |
 | `c` | Contents · `/` search · `Backspace` back |
-| `Ctrl`+`O` | Open a book |
+| `Esc` | Close the panel, then focus mode, then back to the shelf |
+| `Ctrl`+`O` | Open a book · `Ctrl`+`W` put it away |
 
 Clicking a link follows it; external links open in your browser.
 
@@ -119,7 +120,16 @@ just page ~/books/moby.epub "--chapter 3 --screens 2 --theme dark --focus"
 ```
 
 That last one renders a page straight to a PNG with no window, which is the
-quickest way to look at a layout change. Tests cover the XHTML walker (including
+quickest way to look at a layout change. For the whole window — chrome, panels
+and all — there is a headless screenshot tool that uses Slint's software
+renderer, so UI shots are reproducible and need no compositor:
+
+```sh
+cargo run -p folio --example ui_shot -- shelf shots/shelf.png 1100x820
+cargo run -p folio --example ui_shot -- toc shots/toc.png 1100x820 ~/books/moby.epub
+# scenes: shelf · reading · toc · search · settings · focus
+# FOLIO_SHOT_THEME=light|sepia|dark picks the palette
+``` Tests cover the XHTML walker (including
 malformed markup), flow invariants as property tests (blocks stack in order and
 never overlap; the line under the scroll offset round-trips at every zoom step),
 the reading session including chapter crossings and band reuse, and the window's

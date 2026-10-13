@@ -69,6 +69,7 @@ export component AppWindow inherits Window {
     callback page-clicked(length, length);
     callback viewport-changed(length, length);
     callback back();
+    callback close-book();
     callback quit();
     callback pick-family(int);
     callback set-justify(bool);
@@ -92,10 +93,13 @@ export component AppWindow inherits Window {
         key-pressed(event) => {
             // Escape backs out of whatever is open, innermost first.
             if (event.text == Key.Escape) {
+                // Back out one layer at a time, innermost first, ending at the
+                // shelf: there has to be a way home from a book.
                 if (settings-open) { settings-open = false; return accept; }
                 if (search-open) { search-open = false; return accept; }
                 if (focus-mode) { toggle-focus(); return accept; }
                 if (toc-open) { toc-open = false; return accept; }
+                if (has-book) { close-book(); return accept; }
                 return accept;
             }
             if (!has-book) {
@@ -111,6 +115,7 @@ export component AppWindow inherits Window {
                 if (event.text == ",") { settings-open = !settings-open; return accept; }
                 if (event.text == "f") { search-open = !search-open; return accept; }
                 if (event.text == "q") { quit(); return accept; }
+                if (event.text == "w") { close-book(); return accept; }
                 return reject;
             }
             if (event.text == Key.PageDown || event.text == " " || event.text == Key.RightArrow) {
@@ -161,6 +166,7 @@ export component AppWindow inherits Window {
                 zoom-reset => { root.zoom-reset(); }
                 toggle-focus => { root.toggle-focus(); keys.focus(); }
                 toggle-settings => { settings-open = !settings-open; }
+                close-book => { root.close-book(); }
                 back => { root.back(); }
             }
 
