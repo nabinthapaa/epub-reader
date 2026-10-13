@@ -41,6 +41,8 @@ pub enum Job {
         generation: u64,
         query: String,
     },
+    /// Ask for the list of installed font families.
+    Fonts,
     /// Flush the reading position to disk now.
     Flush,
     Shutdown,
@@ -98,6 +100,11 @@ pub enum Event {
         generation: u64,
         hits: Vec<SearchHit>,
     },
+    Fonts {
+        families: Vec<String>,
+        /// The family actually being rendered with right now.
+        current: Option<String>,
+    },
     Failed {
         generation: u64,
         message: String,
@@ -129,6 +136,8 @@ pub fn spawn(emit: impl Fn(Event) + Send + 'static) -> Worker {
 
 struct State {
     reader: Option<Reader>,
+    /// Installed families, resolved once and reused.
+    families: Option<Vec<String>>,
     store: Option<Store>,
     last_save: Instant,
     dirty_position: Option<(String, Position, f32)>,
@@ -137,6 +146,7 @@ struct State {
 fn run(receiver: Receiver<Job>, emit: impl Fn(Event)) {
     let mut state = State {
         reader: None,
+        families: None,
         store: Store::new().ok(),
         last_save: Instant::now(),
         dirty_position: None,
@@ -183,6 +193,11 @@ fn run(receiver: Receiver<Job>, emit: impl Fn(Event)) {
                             toc,
                             recents,
                         });
+                        // The resolved reading face is only known once a book,
+                        // and with it a font system, exists.
+                        let families = families(&mut state);
+                        let current = state.reader.as_ref().map(|reader| reader.body_family());
+                        emit(Event::Fonts { families, current });
                         emit(Event::Frame {
                             generation,
                             frame: Box::new(Frame::from_view(view)),
@@ -223,6 +238,11 @@ fn run(receiver: Receiver<Job>, emit: impl Fn(Event)) {
                     }),
                 }
             }
+            Job::Fonts => {
+                let families = families(&mut state);
+                let current = state.reader.as_ref().map(|reader| reader.body_family());
+                emit(Event::Fonts { families, current });
+            }
             Job::Search { generation, query } => {
                 let Some(reader) = state.reader.as_mut() else {
                     continue;
@@ -233,6 +253,20 @@ fn run(receiver: Receiver<Job>, emit: impl Fn(Event)) {
         }
     }
     flush(&mut state, true);
+}
+
+/// Installed font families, from the open book's font system when there is one
+/// and from a throwaway system font database otherwise.
+fn families(state: &mut State) -> Vec<String> {
+    if let Some(families) = &state.families {
+        return families.clone();
+    }
+    let families = match state.reader.as_ref() {
+        Some(reader) => reader.font_families(),
+        None => folio_core::layout::installed_families(&cosmic_text::FontSystem::new()),
+    };
+    state.families = Some(families.clone());
+    families
 }
 
 type OpenResult = Result<(View, String, Vec<TocItem>, Vec<RecentBook>), String>;

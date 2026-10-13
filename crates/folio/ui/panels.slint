@@ -1,5 +1,5 @@
-import { Tokens, TocRow, SearchRow, ShelfRow } from "tokens.slint";
-import { ScrollView, LineEdit } from "std-widgets.slint";
+import { Tokens, ToolButton, TocRow, SearchRow, ShelfRow } from "tokens.slint";
+import { ScrollView, LineEdit, ComboBox, CheckBox } from "std-widgets.slint";
 
 // Table of contents, flattened with indentation per nesting level.
 export component TocPanel inherits Rectangle {
@@ -245,6 +245,143 @@ export component Shelf inherits Rectangle {
                     }
                 }
             }
+        }
+    }
+}
+
+// Reading settings: the knobs that change how text is set.
+export component SettingsPanel inherits Rectangle {
+    in property <Tokens> tokens;
+    in property <[string]> families;
+    in property <int> family-index;
+    in property <bool> justify;
+    in property <bool> spotlight;
+    in property <bool> follow-system;
+    in property <string> theme-label;
+    in property <int> measure;
+
+    callback pick-family(int);
+    callback set-justify(bool);
+    callback set-spotlight(bool);
+    callback set-follow-system(bool);
+    callback pick-theme(int);
+    callback set-measure(int);
+    callback dismiss();
+
+    width: 304px;
+    // Sized to its contents: an absolutely positioned child would otherwise
+    // stretch to the full height of the window.
+    height: content.preferred-height;
+    background: tokens.surface;
+    border-width: 1px;
+    border-color: tokens.border;
+    border-radius: 10px;
+
+    content := VerticalLayout {
+        padding: 14px;
+        spacing: 10px;
+        alignment: start;
+
+        Text {
+            text: "Reading";
+            color: tokens.muted;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.8px;
+        }
+
+        HorizontalLayout {
+            spacing: 6px;
+            ToolButton {
+                tokens: tokens;
+                text: "Light";
+                active: !follow-system && theme-label == "Light";
+                clicked => { pick-theme(0); }
+            }
+            ToolButton {
+                tokens: tokens;
+                text: "Sepia";
+                active: !follow-system && theme-label == "Sepia";
+                clicked => { pick-theme(1); }
+            }
+            ToolButton {
+                tokens: tokens;
+                text: "Dark";
+                active: !follow-system && theme-label == "Dark";
+                clicked => { pick-theme(2); }
+            }
+            ToolButton {
+                tokens: tokens;
+                text: "Auto";
+                active: follow-system;
+                clicked => { set-follow-system(!follow-system); }
+            }
+        }
+
+        Text {
+            text: "Typeface";
+            color: tokens.muted;
+            font-size: 11px;
+        }
+
+        ComboBox {
+            height: 30px;
+            model: families;
+            current-index: family-index;
+            selected(value) => { pick-family(self.current-index); }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: space-between;
+            Text {
+                text: "Line length";
+                color: tokens.text;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+            HorizontalLayout {
+                spacing: 4px;
+                ToolButton {
+                    tokens: tokens;
+                    text: "−";
+                    clicked => { set-measure(measure - 5); }
+                }
+                Text {
+                    text: measure + " ch";
+                    color: tokens.muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    width: 44px;
+                    horizontal-alignment: center;
+                }
+                ToolButton {
+                    tokens: tokens;
+                    text: "+";
+                    clicked => { set-measure(measure + 5); }
+                }
+            }
+        }
+
+        CheckBox {
+            height: 24px;
+            text: "Justify paragraphs";
+            checked: justify;
+            toggled => { set-justify(self.checked); }
+        }
+
+        CheckBox {
+            height: 24px;
+            text: "Spotlight paragraph in focus";
+            checked: spotlight;
+            toggled => { set-spotlight(self.checked); }
+        }
+
+        Text {
+            text: "Press f for focus mode, / to search, c for contents.";
+            color: tokens.muted;
+            font-size: 11px;
+            wrap: word-wrap;
         }
     }
 }

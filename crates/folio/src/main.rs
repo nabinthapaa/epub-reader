@@ -42,6 +42,9 @@ struct App {
     generation: Cell<u64>,
     frame: RefCell<Option<Box<Frame>>>,
     toc: RefCell<Vec<TocItem>>,
+    families: RefCell<Vec<String>>,
+    /// Kept alive so the transient message clears itself exactly once.
+    notice_timer: RefCell<Option<slint::Timer>>,
     hits: RefCell<Vec<SearchHit>>,
     recents: RefCell<Vec<RecentBook>>,
     has_book: Cell<bool>,
@@ -109,9 +112,7 @@ impl App {
         let Some(ui) = self.ui.upgrade() else { return };
         ui.set_notice(message.into());
         let weak = self.ui.clone();
-        // Clear the message after a few seconds.
-        let timer = Rc::new(slint::Timer::default());
-        let keep = Rc::clone(&timer);
+        let timer = slint::Timer::default();
         timer.start(
             slint::TimerMode::SingleShot,
             std::time::Duration::from_secs(4),
@@ -119,10 +120,39 @@ impl App {
                 if let Some(ui) = weak.upgrade() {
                     ui.set_notice("".into());
                 }
-                let _ = &keep;
             },
         );
-        std::mem::forget(timer);
+        *self.notice_timer.borrow_mut() = Some(timer);
+    }
+
+    /// Change a typographic setting, re-render with it, and remember it.
+    fn edit_type_settings(&self, edit: impl FnOnce(&mut folio_core::TypeSettings)) {
+        let settings = {
+            let mut settings = self.settings.borrow_mut();
+            edit(&mut settings.type_settings);
+            settings.type_settings.clone()
+        };
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_justify(matches!(
+                settings.alignment,
+                folio_core::layout::Alignment::Justified
+            ));
+            ui.set_measure(settings.measure_ch.round() as i32);
+            ui.set_family_index(self.family_index(settings.family.as_deref()));
+        }
+        self.command(Command::SetTypeSettings(settings));
+        self.save_settings();
+    }
+
+    /// Row of the typeface list matching `family`.
+    fn family_index(&self, family: Option<&str>) -> i32 {
+        let Some(family) = family else { return -1 };
+        self.families
+            .borrow()
+            .iter()
+            .position(|installed| installed == family)
+            .map(|index| index as i32)
+            .unwrap_or(-1)
     }
 
     /// Handle a click on the page: follow a link, or turn the page.
@@ -207,6 +237,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         generation: Cell::new(0),
         frame: RefCell::new(None),
         toc: RefCell::new(Vec::new()),
+        families: RefCell::new(Vec::new()),
+        notice_timer: RefCell::new(None),
         hits: RefCell::new(Vec::new()),
         recents: RefCell::new(recents.clone()),
         has_book: Cell::new(false),
@@ -225,6 +257,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     wire_callbacks(&ui, &app);
+    ui.set_justify(matches!(
+        settings.type_settings.alignment,
+        folio_core::layout::Alignment::Justified
+    ));
+    ui.set_measure(settings.type_settings.measure_ch.round() as i32);
+    ui.set_follow_system(matches!(settings.theme, ThemeChoice::System));
+    app.worker.send(Job::Fonts);
 
     // A path on the command line opens straight away.
     if let Some(path) = std::env::args_os().nth(1) {
@@ -387,6 +426,59 @@ fn wire_callbacks(ui: &AppWindow, app: &Rc<App>) {
             app.open(path);
         }
     });
+    on!(on_pick_family, |app: Rc<App>| move |index: i32| {
+        let family = app
+            .families
+            .borrow()
+            .get(index.max(0) as usize)
+            .cloned();
+        if let Some(family) = family {
+            app.edit_type_settings(move |settings| settings.family = Some(family));
+        }
+    });
+    on!(on_set_justify, |app: Rc<App>| move |justify: bool| {
+        app.edit_type_settings(move |settings| {
+            settings.alignment = if justify {
+                folio_core::layout::Alignment::Justified
+            } else {
+                folio_core::layout::Alignment::Left
+            };
+        });
+    });
+    on!(on_set_measure, |app: Rc<App>| move |measure: i32| {
+        let measure = measure.clamp(40, 110) as f32;
+        app.edit_type_settings(move |settings| settings.measure_ch = measure);
+    });
+    on!(on_pick_theme, |app: Rc<App>| move |index: i32| {
+        let preset = match index {
+            1 => ThemePreset::Sepia,
+            2 => ThemePreset::Dark,
+            _ => ThemePreset::Light,
+        };
+        app.theme.set(ThemeChoice::Fixed(preset));
+        if let Some(ui) = app.ui.upgrade() {
+            ui.set_follow_system(false);
+        }
+        app.apply_theme(preset);
+    });
+    on!(on_set_follow_system, |app: Rc<App>| move |follow: bool| {
+        let (choice, preset) = if follow {
+            let dark = app
+                .ui
+                .upgrade()
+                .map(|ui| ui.get_system_dark())
+                .unwrap_or(false);
+            (ThemeChoice::System, ThemeChoice::System.resolve(dark))
+        } else {
+            let preset = app.preset.get();
+            (ThemeChoice::Fixed(preset), preset)
+        };
+        app.theme.set(choice);
+        if let Some(ui) = app.ui.upgrade() {
+            ui.set_follow_system(follow);
+        }
+        app.apply_theme(preset);
+    });
     on!(on_quit, |app: Rc<App>| move || {
         app.save_settings();
         app.worker.send(Job::Flush);
@@ -395,13 +487,15 @@ fn wire_callbacks(ui: &AppWindow, app: &Rc<App>) {
 }
 
 fn handle_event(app: &Rc<App>, event: Event) {
-    // Frames produced for a previously open book must not overwrite the
-    // current one; the worker and the UI agree on monotonic generations.
+    // Frames produced for a previously open book must not overwrite the current
+    // one; the worker and the UI agree on monotonic generations. The font list
+    // belongs to no book, so it is never stale.
     let generation = match &event {
         Event::Opened { generation, .. }
         | Event::Frame { generation, .. }
         | Event::SearchDone { generation, .. }
         | Event::Failed { generation, .. } => *generation,
+        Event::Fonts { .. } => u64::MAX,
     };
     if generation < app.book_generation.get() {
         tracing::debug!(generation, "dropping stale worker event");
@@ -434,6 +528,21 @@ fn handle_event(app: &Rc<App>, event: Event) {
                 ui.set_searching(false);
             }
             *app.hits.borrow_mut() = hits;
+        }
+        Event::Fonts { families, current } => {
+            if let Some(ui) = app.ui.upgrade() {
+                let rows: Vec<slint::SharedString> =
+                    families.iter().map(slint::SharedString::from).collect();
+                ui.set_families(slint::ModelRc::new(slint::VecModel::from(rows)));
+                *app.families.borrow_mut() = families;
+                // Show the family in use: the chosen one when it is installed,
+                // the resolved fallback otherwise.
+                let chosen = app.settings.borrow().type_settings.family.clone();
+                let shown = chosen
+                    .filter(|name| app.family_index(Some(name)) >= 0)
+                    .or(current);
+                ui.set_family_index(app.family_index(shown.as_deref()));
+            }
         }
         Event::Failed { message, .. } => {
             tracing::error!(%message, "command failed");

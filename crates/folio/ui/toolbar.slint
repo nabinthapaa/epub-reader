@@ -18,6 +18,7 @@ export component Toolbar inherits Rectangle {
     callback zoom(int);
     callback zoom-reset();
     callback toggle-focus();
+    callback toggle-settings();
     callback back();
 
     height: 46px;
@@ -98,6 +99,11 @@ export component Toolbar inherits Rectangle {
             text: "Focus";
             enabled: has-book;
             clicked => { toggle-focus(); }
+        }
+        ToolButton {
+            tokens: tokens;
+            text: "⚙";
+            clicked => { toggle-settings(); }
         }
         ToolButton {
             tokens: tokens;

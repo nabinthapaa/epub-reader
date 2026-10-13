@@ -221,6 +221,12 @@ impl Reader {
         self.book.cover()
     }
 
+    /// The body family text is actually shaped with, after the preference
+    /// chain has been resolved against what is installed.
+    pub fn body_family(&self) -> String {
+        self.stack.body.clone()
+    }
+
     /// Available body font families, for the settings panel.
     pub fn font_families(&self) -> Vec<String> {
         crate::layout::installed_families(&self.layouter.fonts)

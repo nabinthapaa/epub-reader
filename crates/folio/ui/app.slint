@@ -1,7 +1,7 @@
 import { Tokens, TocRow, SearchRow, ShelfRow } from "tokens.slint";
 import { Palette } from "std-widgets.slint";
 import { Toolbar } from "toolbar.slint";
-import { TocPanel, SearchPanel, Shelf } from "panels.slint";
+import { TocPanel, SearchPanel, Shelf, SettingsPanel } from "panels.slint";
 
 export { Tokens, TocRow, SearchRow, ShelfRow }
 
@@ -25,12 +25,18 @@ export component AppWindow inherits Window {
     in property <[ShelfRow]> shelf;
     in property <bool> searching;
     in property <string> notice;
+    in property <[string]> families;
+    in property <int> family-index;
+    in property <bool> justify;
+    in property <bool> follow-system;
+    in property <int> measure: 70;
 
     // What the desktop reports, so "follow system" can resolve a preset.
     out property <bool> system-dark: Palette.color-scheme == ColorScheme.dark;
 
     in-out property <bool> toc-open;
     in-out property <bool> search-open;
+    in-out property <bool> settings-open;
 
     // --- requests sent to Rust ---
     callback turn-page(int);
@@ -50,6 +56,11 @@ export component AppWindow inherits Window {
     callback viewport-changed(length, length);
     callback back();
     callback quit();
+    callback pick-family(int);
+    callback set-justify(bool);
+    callback set-follow-system(bool);
+    callback pick-theme(int);
+    callback set-measure(int);
 
     title: book-title;
     background: tokens.page;
@@ -67,6 +78,7 @@ export component AppWindow inherits Window {
         key-pressed(event) => {
             // Escape backs out of whatever is open, innermost first.
             if (event.text == Key.Escape) {
+                if (settings-open) { settings-open = false; return accept; }
                 if (search-open) { search-open = false; return accept; }
                 if (focus-mode) { toggle-focus(); return accept; }
                 if (toc-open) { toc-open = false; return accept; }
@@ -82,6 +94,7 @@ export component AppWindow inherits Window {
                 if (event.text == "0") { zoom-reset(); return accept; }
                 if (event.text == "o") { open-file(); return accept; }
                 if (event.text == "t") { toc-open = !toc-open; return accept; }
+                if (event.text == ",") { settings-open = !settings-open; return accept; }
                 if (event.text == "f") { search-open = !search-open; return accept; }
                 if (event.text == "q") { quit(); return accept; }
                 return reject;
@@ -132,6 +145,7 @@ export component AppWindow inherits Window {
                 zoom(step) => { root.zoom(step); }
                 zoom-reset => { root.zoom-reset(); }
                 toggle-focus => { root.toggle-focus(); keys.focus(); }
+                toggle-settings => { settings-open = !settings-open; }
                 back => { root.back(); }
             }
 
@@ -263,6 +277,31 @@ export component AppWindow inherits Window {
                     }
                 }
             }
+        }
+
+        if settings-open && !focus-mode: TouchArea {
+            // Clicking away dismisses the panel.
+            clicked => { settings-open = false; keys.focus(); }
+        }
+
+        if settings-open && !focus-mode: SettingsPanel {
+            x: parent.width - self.width - 12px;
+            y: 52px;
+            tokens: tokens;
+            families: families;
+            family-index: family-index;
+            justify: justify;
+            spotlight: spotlight;
+            follow-system: follow-system;
+            theme-label: theme-label;
+            measure: measure;
+            pick-family(index) => { root.pick-family(index); }
+            set-justify(on) => { root.set-justify(on); }
+            set-spotlight(on) => { root.toggle-spotlight(); }
+            set-follow-system(on) => { root.set-follow-system(on); }
+            pick-theme(index) => { root.pick-theme(index); }
+            set-measure(value) => { root.set-measure(value); }
+            dismiss => { settings-open = false; }
         }
 
         // Transient message (open errors, saved state, and the like).
