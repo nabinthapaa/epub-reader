@@ -5,6 +5,58 @@ scenes with `ui_shot`, review again, prepend the new findings here.
 
 ---
 
+## Round 2 — 2026-10-14, after the round-1 fixes
+
+Measured from `.overnight/shots-round-1/`. The reviewer's verdict: **shippable**.
+"The reading surface is the product and it is good." Everything below is done
+unless marked otherwise.
+
+### Done this round (commit ff86888)
+
+1. **Toolbar balance** — round 1's `visible: has-book` hid controls but kept
+   their layout space, so the right cluster sat 75px from the edge against the
+   left's 18px. Every one is now an `if`. This was a regression round 1 caused.
+2. **The search panel's divider ran down its middle** — a `Rectangle` with a
+   width but no `x`, which Slint centres. Present since the panel was written.
+3. **Light theme was never tuned**: the scrollbar track and focus hairline used
+   text-alpha values chosen against a dark page and vanished on white. Both use
+   `border` now, the thumb uses `muted`, and light prose went 16.2:1 → 13.2:1.
+4. **"~83 min left" was chapter-scoped beside a book-scoped bar** — it now says
+   "in chapter", and the status bar groups chapter-left, book-right.
+5. **Chapter stepper** in the status bar's dead space: `n`/`p` were bound but
+   had no visible affordance anywhere, which the reviewer called the single
+   highest-value thing missing for a first-time user.
+6. Settings popover alignment: typeface picker is a field with a chevron, line
+   length is one segmented control, checkbox ink aligns, "?" is a key cap.
+7. Shortcuts card has real columns (it faked them with spaces in a proportional
+   font); focus mode letterboxes the page; contents reveals the current row
+   through a function rather than a `viewport-y` binding the user's own
+   scrolling would replace; links show a pointer; shelf titles elide past three
+   lines; the shot tool scrolls into real prose.
+
+### Deliberately not done
+
+- **Panels still inset the reading area rather than floating over it** (round 2
+  item 10). Opening Contents shifts the column ~133px sideways. Overlaying
+  would nail the prose in place but cover 25–65px of it at this window size,
+  and more on a narrow window. Insetting is what Apple Books and friends do and
+  it never hides text; the shift is the honest cost. Revisit if it grates.
+- The shelf is still one horizontally-scrolling row, not a wrapping grid: Slint
+  has no wrap layout, so this needs either chunking the model in Rust by window
+  width or a hand-rolled grid. Worth doing when the shelf holds more than a
+  screen's worth of books.
+
+### Corrections recorded against the reviewer
+
+- Round 1's "the body font differs between scenes" was false: both resolve to
+  Noto Serif. The real defect it pointed at was the band being stretched by
+  `image-fit: fill` at `parent.width`.
+- Round 1's measure-narrowing diagnosis blamed a flag only focus mode sets.
+- Round 2's "focus mode is reading minus chrome" partly rested on a shot where
+  the tool never told the reader about focus mode, so the band was rasterized
+  at the full measure.
+
+
 ## Round 1 — 2026-10-13, dark/light at 1100x820
 
 Reviewed: shelf, reading (dark + light), toc, search, settings, focus.

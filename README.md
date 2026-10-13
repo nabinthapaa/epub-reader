@@ -59,10 +59,12 @@ folio ~/books/moby.epub    # opens a book
 | `t` | Cycle theme |
 | `Ctrl` `+` / `-` / `0` | Zoom in, out, reset · `Ctrl`+scroll works too |
 | `c` | Contents · `/` search · `Backspace` back |
+| `?` | Keyboard shortcuts |
 | `Esc` | Close the panel, then focus mode, then back to the shelf |
 | `Ctrl`+`O` | Open a book · `Ctrl`+`W` put it away |
 
-Clicking a link follows it; external links open in your browser.
+Clicking a link follows it; external links open in your browser. The status bar
+carries a chapter stepper and the scrollbar can be dragged.
 
 ## How it works
 
