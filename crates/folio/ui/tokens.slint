@@ -8,6 +8,8 @@ export struct Tokens {
     accent: color,
     link: color,
     border: color,
+    /// Lets the chrome pick a scrim depth without re-deriving luminance.
+    dark: bool,
 }
 
 export struct TocRow {
@@ -19,7 +21,9 @@ export struct TocRow {
 
 export struct SearchRow {
     label: string,
-    snippet: string,
+    /// Markup, not plain text: the matched words are bold, which is the whole
+    /// point of a result list you are meant to scan.
+    snippet: styled-text,
     index: int,
 }
 
@@ -230,7 +234,9 @@ export component Shortcuts inherits Rectangle {
     in property <Tokens> tokens;
     callback dismiss();
 
-    background: #000000.with-alpha(0.45);
+    // One scrim depth for every overlay, and a lighter one on the warm themes
+    // where 0.3 black turns cream into olive-grey.
+    background: #000000.with-alpha(tokens.dark ? 0.3 : 0.14);
     TouchArea { clicked => { root.dismiss(); } }
 
     Rectangle {
@@ -238,9 +244,11 @@ export component Shortcuts inherits Rectangle {
         y: (parent.height - self.height) / 2;
         width: 580px;
         height: card.preferred-height;
-        background: tokens.surface;
+        // As the settings popover: the software renderer draws no shadow, so
+        // the surface and the border carry the elevation themselves.
+        background: tokens.surface.mix(tokens.text, 0.94);
         border-width: 1px;
-        border-color: tokens.border;
+        border-color: tokens.text.with-alpha(0.22);
         border-radius: 12px;
         drop-shadow-blur: 32px;
         drop-shadow-offset-y: 10px;

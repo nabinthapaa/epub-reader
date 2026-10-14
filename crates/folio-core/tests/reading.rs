@@ -512,3 +512,40 @@ fn the_stepper_follows_the_contents_inside_one_spine_document() {
     let past = reader.apply(Command::Section(5)).unwrap();
     assert_eq!(past.chapter_label, "Third");
 }
+
+/// The search panel marks the matched words, so the offset it is given has to
+/// survive the trimming and the ellipses that build the snippet.
+#[test]
+fn a_search_hit_points_at_the_words_that_matched() {
+    let long = support::paragraphs(4);
+    let mut reader = reader_with(vec![
+        ("one.xhtml", "<p>   A short line about a Whale.   </p>"),
+        ("two.xhtml", long.as_str()),
+    ]);
+
+    let hits = reader.search("whale", 10);
+    let hit = hits.first().expect("the word is in the book");
+    let (start, end) = hit.highlight;
+    let marked: String = hit
+        .snippet
+        .chars()
+        .skip(start)
+        .take(end - start)
+        .collect::<String>()
+        .to_lowercase();
+    assert_eq!(marked, "whale", "snippet was {:?}", hit.snippet);
+
+    // And again where the snippet has to be cut on both sides, so both the
+    // leading ellipsis and the trim are in play.
+    let hits = reader.search("jumps", 10);
+    for hit in &hits {
+        let (start, end) = hit.highlight;
+        let marked: String = hit.snippet.chars().skip(start).take(end - start).collect();
+        assert_eq!(
+            marked.to_lowercase(),
+            "jumps",
+            "snippet was {:?}",
+            hit.snippet
+        );
+    }
+}

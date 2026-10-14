@@ -20,7 +20,8 @@ export component TocPanel inherits Rectangle {
         }
     }
 
-    width: 260px;
+    // Width is the parent's business: it has to balance this against the
+    // measure, and a width set here outranks the max-width it tries to apply.
     background: tokens.surface;
 
     Rectangle {
@@ -33,12 +34,18 @@ export component TocPanel inherits Rectangle {
         padding: 10px;
         spacing: 6px;
 
-        Text {
-            text: "CONTENTS";
-            color: tokens.muted;
-            font-size: 11px;
-            font-weight: 600;
-            letter-spacing: 0.6px;
+        HorizontalLayout {
+            // The rows inset their labels another 10px for the hover shape, so
+            // the header has to match or it sits 10px left of the list.
+            padding-left: 10px;
+            vertical-stretch: 0;
+            Text {
+                text: "CONTENTS";
+                color: tokens.muted;
+                font-size: 11px;
+                font-weight: 600;
+                letter-spacing: 0.6px;
+            }
         }
 
         list := ScrollView {
@@ -83,6 +90,16 @@ export component TocPanel inherits Rectangle {
             }
         }
     }
+
+    // A 135-row contents was sliced mid-glyph at the panel's lower edge with
+    // nothing to say it continued. Sibling of the layout, so it sits on that
+    // edge rather than inside the padding.
+    Rectangle {
+        y: parent.height - 24px;
+        height: 24px;
+        background: @linear-gradient(180deg,
+            tokens.surface.with-alpha(0.0) 0%, tokens.surface 100%);
+    }
 }
 
 // In-book search: a query field and its results.
@@ -90,12 +107,11 @@ export component SearchPanel inherits Rectangle {
     in property <Tokens> tokens;
     in property <[SearchRow]> results;
     in property <bool> searching;
-    in property <string> query;
     callback run(string);
     callback activate(int);
     callback dismissed();
 
-    width: 300px;
+    // As TocPanel: the parent sizes this.
     background: tokens.surface;
 
     Rectangle {
@@ -117,20 +133,28 @@ export component SearchPanel inherits Rectangle {
             escaped => { root.dismissed(); }
         }
 
-        Text {
-            text: searching
-                ? "SEARCHING…"
-                : (results.length > 0 ? results.length + " MATCHES" : "NO MATCHES");
-            color: tokens.muted;
-            font-size: 11px;
-            font-weight: 600;
-            letter-spacing: 0.6px;
+        HorizontalLayout {
+            // Lands on the same left edge as the snippets below it.
+            padding-left: 8px;
+            vertical-stretch: 0;
+            Text {
+                text: searching
+                    ? "SEARCHING…"
+                    : (results.length > 0 ? results.length + " MATCHES" : "NO MATCHES");
+                color: tokens.muted;
+                font-size: 11px;
+                font-weight: 600;
+                letter-spacing: 0.6px;
+            }
         }
 
         ScrollView {
             vertical-scrollbar-policy: ScrollBarPolicy.always-off;
             VerticalLayout {
-                spacing: 2px;
+                // Hits were 14px apart while a hit's own label and snippet sat
+                // 12px apart, so the list read as one stack rather than as
+                // separate results. The gap between has to beat the gap within.
+                spacing: 10px;
                 for row in results: Rectangle {
                     height: content.preferred-height + 12px;
                     border-radius: 5px;
@@ -147,11 +171,11 @@ export component SearchPanel inherits Rectangle {
                             font-size: 11px;
                             overflow: elide;
                         }
-                        Text {
+                        StyledText {
                             text: row.snippet;
-                            color: tokens.text;
-                            font-size: 12px;
-                            wrap: word-wrap;
+                            default-color: tokens.text;
+                            default-font-size: 12px;
+                            width: parent.width;
                         }
                     }
 
@@ -164,8 +188,22 @@ export component SearchPanel inherits Rectangle {
         }
     }
 
+    Rectangle {
+        y: parent.height - 24px;
+        height: 24px;
+        background: @linear-gradient(180deg,
+            tokens.surface.with-alpha(0.0) 0%, tokens.surface 100%);
+    }
+
     public function focus-field() {
         field.focus-field();
+    }
+
+    /// The field owns its own text, so this is the only way in from Rust.
+    /// Used by the screenshot tool, which would otherwise photograph a list of
+    /// matches above an empty search box.
+    public function set-query(text: string) {
+        field.text = text;
     }
 }
 
@@ -250,7 +288,10 @@ export component Shelf inherits Rectangle {
                         border-radius: 4px;
                         background: tokens.surface;
                         border-width: 1px;
-                        border-color: tokens.border;
+                        // `border` is 1.3:1 on surface, which is right for a
+                        // hairline between panels and too faint to contain a
+                        // cream-coloured cover.
+                        border-color: tokens.muted.with-alpha(0.4);
                         clip: true;
 
                         if book.cover.width > 0: Image {
@@ -259,12 +300,22 @@ export component Shelf inherits Rectangle {
                             height: parent.height;
                             image-fit: contain;
                         }
+                        // A bare fill meant 1% of a 148px cover was a single
+                        // accent pixel in the corner, indistinguishable from an
+                        // antialiasing artifact — on the one screen whose job
+                        // is to say where you left off.
                         if book.progress > 0: Rectangle {
                             y: parent.height - 3px;
                             x: 0;
-                            width: parent.width * book.progress / 100;
+                            width: parent.width;
                             height: 3px;
-                            background: tokens.accent;
+                            background: tokens.border;
+                            Rectangle {
+                                x: 0;
+                                width: max(4px, parent.width * book.progress / 100);
+                                height: parent.height;
+                                background: tokens.accent;
+                            }
                         }
                         // Books with no cover get their title instead of a
                         // blank rectangle.
@@ -287,10 +338,14 @@ export component Shelf inherits Rectangle {
                         font-size: 12px;
                         font-weight: 600;
                         wrap: word-wrap;
-                        // Two lines were already reserved; eliding threw
-                        // away the tail of every title for nothing.
-                        min-height: 48px;
-                        max-height: 48px;
+                        // Three lines are reserved. With `wrap` set, eliding
+                        // only touches the line that overflows, so a long
+                        // title ends in an ellipsis rather than mid-x-height.
+                        overflow: elide;
+                        // Three 16px lines plus the slack `elide` needs to
+                        // place an ellipsis on the third rather than the second.
+                        min-height: 54px;
+                        max-height: 54px;
                     }
 
                     Text {
@@ -321,7 +376,8 @@ export component Shelf inherits Rectangle {
                     x: 8px;
                     width: parent.width - 16px;
                     height: root.cover-height;
-                    border-radius: 6px;
+                    // 4px, as the cover boxes it stands in a row with.
+                    border-radius: 4px;
                     border-width: 1px;
                     border-color: tokens.border;
                     background: add.has-hover ? tokens.text.with-alpha(0.07) : transparent;
@@ -329,7 +385,9 @@ export component Shelf inherits Rectangle {
                 }
 
                 VerticalLayout {
-                    y: 8px;
+                    // 2px up: the 30px glyph carries unused ascender space, so
+                    // centring the box leaves the ink sitting low in it.
+                    y: 6px;
                     height: root.cover-height;
                     alignment: center;
                     spacing: 6px;
@@ -388,6 +446,7 @@ export component SettingsPanel inherits Rectangle {
     callback pick-theme(int);
     callback set-measure(int);
     callback dismiss();
+    callback show-shortcuts();
 
     private property <bool> picking-family: false;
 
@@ -395,9 +454,12 @@ export component SettingsPanel inherits Rectangle {
     // Sized to its contents: an absolutely positioned child would otherwise
     // stretch to the full height of the window.
     height: content.preferred-height;
-    background: tokens.surface;
+    // Lifted a step off `surface` and given a border that reads at a glance:
+    // the drop shadow below draws nothing at all in the software renderer, so
+    // elevation cannot depend on it.
+    background: tokens.surface.mix(tokens.text, 0.94);
     border-width: 1px;
-    border-color: tokens.border;
+    border-color: tokens.text.with-alpha(0.22);
     border-radius: 10px;
     drop-shadow-blur: 24px;
     drop-shadow-offset-y: 8px;
@@ -552,13 +614,13 @@ export component SettingsPanel inherits Rectangle {
                         text: "−";
                         clicked => { set-measure(measure - 5); }
                     }
-                    Text {
+                    // A ToolButton, not a Text: the toolbar's zoom group is
+                    // built the same way and its middle resets the value, so
+                    // this one does too rather than only looking as if it might.
+                    ToolButton {
+                        tokens: tokens;
                         text: measure + " ch";
-                        color: tokens.muted;
-                        font-size: 12px;
-                        vertical-alignment: center;
-                        width: 48px;
-                        horizontal-alignment: center;
+                        clicked => { set-measure(70); }
                     }
                     ToolButton {
                         tokens: tokens;
@@ -583,29 +645,45 @@ export component SettingsPanel inherits Rectangle {
             toggled(on) => { set-spotlight(on); }
         }
 
-        HorizontalLayout {
-            spacing: 7px;
-            alignment: start;
-            Text {
-                text: "Keyboard shortcuts";
-                color: tokens.muted;
-                font-size: 11px;
-                vertical-alignment: center;
-            }
-            Rectangle {
-                width: 17px;
-                height: 17px;
-                border-radius: 4px;
-                background: tokens.text.with-alpha(0.08);
+        // The chip reads as a key cap — "press ? for shortcuts" — but it is
+        // styled like a control, so the row opens the card as well.
+        Rectangle {
+            min-height: 22px;
+            max-height: 22px;
+            border-radius: 4px;
+            background: shortcuts-touch.has-hover ? tokens.text.with-alpha(0.06) : transparent;
+
+            HorizontalLayout {
+                padding-left: 2px;
+                spacing: 7px;
+                alignment: start;
                 Text {
-                    text: "?";
+                    text: "Keyboard shortcuts";
                     color: tokens.muted;
                     font-size: 11px;
-                    horizontal-alignment: center;
                     vertical-alignment: center;
-                    width: parent.width;
-                    height: parent.height;
                 }
+                Rectangle {
+                    width: 17px;
+                    height: 17px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 4px;
+                    background: tokens.text.with-alpha(0.08);
+                    Text {
+                        text: "?";
+                        color: tokens.muted;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: parent.width;
+                        height: parent.height;
+                    }
+                }
+            }
+
+            shortcuts-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.show-shortcuts(); }
             }
         }
     }

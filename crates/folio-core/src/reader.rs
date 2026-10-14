@@ -112,6 +112,10 @@ pub struct SearchHit {
     pub chapter_label: String,
     /// The match with a little context either side.
     pub snippet: String,
+    /// Where the match itself sits in `snippet`, as char indices, so the UI
+    /// can mark it. Case folding is not length-preserving, so this cannot be
+    /// recovered by searching the snippet again.
+    pub highlight: (usize, usize),
 }
 
 /// Everything the UI needs to draw one frame.
@@ -567,23 +571,16 @@ impl Reader {
                 }
                 let text = block.text();
                 if let Some((start, end)) = find_case_insensitive(&text, &needle) {
+                    let (snippet, highlight) = snippet_around(&text, start, end);
                     hits.push(SearchHit {
                         position: Position {
                             chapter,
                             block: block_index,
                             char_offset: start,
                         },
-                        chapter_label: self
-                            .book
-                            .toc()
-                            .iter()
-                            .rfind(|item| {
-                                item.target.as_ref().is_some_and(|t| t.chapter <= chapter)
-                                    && !item.label.trim().is_empty()
-                            })
-                            .map(|item| item.label.clone())
-                            .unwrap_or_else(|| format!("Chapter {}", chapter + 1)),
-                        snippet: snippet_around(&text, start, end),
+                        chapter_label: label_for(self.book.toc(), &parsed, chapter, block_index),
+                        snippet,
+                        highlight,
                     });
                 }
             }
@@ -1271,19 +1268,74 @@ fn find_case_insensitive(text: &str, needle: &[char]) -> Option<(usize, usize)> 
 
 /// A short excerpt around a match, with ellipses where it was cut. `start` and
 /// `end` are character indices.
-fn snippet_around(text: &str, start: usize, end: usize) -> String {
+/// What to call the section a block belongs to.
+///
+/// A whole-spine-document label is wrong for most Gutenberg EPUBs, where one
+/// document holds a dozen chapters: every hit in the file would be labelled
+/// with the same entry. Anchors live on the parsed blocks, so the right entry
+/// can be found without laying the chapter out.
+fn label_for(toc: &[TocItem], parsed: &Chapter, chapter: usize, block: usize) -> String {
+    let mut best: Option<(usize, &str)> = None;
+    let mut earlier: Option<&str> = None;
+    for item in toc {
+        let Some(target) = &item.target else { continue };
+        if item.label.trim().is_empty() {
+            continue;
+        }
+        if target.chapter < chapter {
+            earlier = Some(item.label.as_str());
+            continue;
+        }
+        if target.chapter > chapter {
+            continue;
+        }
+        let start = match target.anchor.as_deref() {
+            Some(anchor) => parsed.block_for_anchor(anchor).unwrap_or(0),
+            None => 0,
+        };
+        if start <= block && best.is_none_or(|(at, _)| start >= at) {
+            best = Some((start, item.label.as_str()));
+        }
+    }
+    // Front matter sits above every entry; naming the first one is better than
+    // "Chapter 3", which counts spine documents and means nothing to a reader.
+    // This is what `active_toc` does for the status bar.
+    best.map(|(_, label)| label)
+        .or(earlier)
+        .or_else(|| {
+            toc.iter()
+                .map(|item| item.label.as_str())
+                .find(|label| !label.trim().is_empty())
+        })
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Chapter {}", chapter + 1))
+}
+
+/// The match with context either side, and where the match sits within it.
+fn snippet_around(text: &str, start: usize, end: usize) -> (String, (usize, usize)) {
     const CONTEXT: usize = 48;
+    let total = text.chars().count();
     let from = start.saturating_sub(CONTEXT);
-    let to = (end + CONTEXT).min(text.chars().count());
+    let to = (end + CONTEXT).min(total);
     let excerpt: String = text.chars().skip(from).take(to - from).collect();
+    let trimmed = excerpt.trim_start();
+    // Both trims move the match, so the offset has to follow them.
+    let trimmed_away = excerpt.chars().count() - trimmed.chars().count();
+    let trimmed = trimmed.trim_end();
 
     let mut snippet = String::new();
+    let mut offset = 0;
     if from > 0 {
         snippet.push('…');
+        offset += 1;
     }
-    snippet.push_str(excerpt.trim());
-    if to < text.chars().count() {
+    snippet.push_str(trimmed);
+    if to < total {
         snippet.push('…');
     }
-    snippet
+
+    let begin = offset + (start - from) - trimmed_away.min(start - from);
+    let length = end - start;
+    let last = snippet.chars().count();
+    (snippet, (begin.min(last), (begin + length).min(last)))
 }

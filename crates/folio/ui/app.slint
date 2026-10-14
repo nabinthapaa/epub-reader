@@ -96,8 +96,17 @@ export component AppWindow inherits Window {
     min-height: 360px;
     forward-focus: keys;
 
+    private property <bool> toc-showing: toc-open && !focus-mode && has-book;
+    private property <bool> search-showing: search-open && !focus-mode && has-book;
+
     public function focus-reader() {
         keys.focus();
+    }
+
+    /// Put text in the search box without running a search. Only the
+    /// screenshot tool needs this; a reader types into the field directly.
+    public function seed-search(text: string) {
+        search-panel.set-query(text);
     }
 
     // Reveal the current entry when the panel opens, not on every frame.
@@ -186,6 +195,8 @@ export component AppWindow inherits Window {
                 has-book: has-book;
                 can-go-back: can-go-back;
                 font-px: font-px;
+                content-left: toc-panel.width;
+                content-width: root.width - toc-panel.width - search-panel.width;
                 toggle-toc => { toc-open = !toc-open; keys.focus(); }
                 toggle-search => {
                     search-open = !search-open;
@@ -202,8 +213,15 @@ export component AppWindow inherits Window {
 
             HorizontalLayout {
                 toc-panel := TocPanel {
-                    visible: toc-open && !focus-mode && has-book;
-                    width: (toc-open && !focus-mode && has-book) ? 260px : 0px;
+                    visible: root.toc-showing;
+                    // A panel sized from the window width binds the window's
+                    // own layout back to its children. Giving the layout a
+                    // range to solve instead lets a narrow window squeeze the
+                    // panel rather than the measure, with no feedback loop.
+                    preferred-width: root.toc-showing ? 260px : 0px;
+                    min-width: root.toc-showing ? 200px : 0px;
+                    max-width: root.toc-showing ? 260px : 0px;
+                    horizontal-stretch: 0;
                     tokens: tokens;
                     rows: toc;
                     current-index: toc-index;
@@ -220,6 +238,9 @@ export component AppWindow inherits Window {
 
                 reader-area := Rectangle {
                     horizontal-stretch: 1;
+                    // Below this the measure stops being a measure, so the
+                    // layout takes the width out of the panel instead.
+                    min-width: 340px;
                     background: tokens.page;
                     clip: true;
 
@@ -339,40 +360,33 @@ export component AppWindow inherits Window {
 
                     // Lines are cut by the viewport edges; fading them says
                     // "there is more" instead of looking like clipping damage.
+                    // Tied to the leading, not to a fixed 20/28px: the zoom
+                    // ladder runs 12px to 48px, so a fade shorter than a line
+                    // dissolves the top line into a ghost of itself instead of
+                    // occluding it.
                     if has-book: Rectangle {
                         y: 0;
-                        height: 20px;
+                        height: root.font-px * 1.8px;
                         background: @linear-gradient(180deg,
                             tokens.page 0%, tokens.page.with-alpha(0.0) 100%);
                     }
                     if has-book: Rectangle {
-                        y: parent.height - 28px;
-                        height: 28px;
+                        y: parent.height - root.font-px * 1.8px;
+                        height: root.font-px * 1.8px;
                         background: @linear-gradient(180deg,
                             tokens.page.with-alpha(0.0) 0%, tokens.page 100%);
                     }
 
-                    // In focus mode the only chrome left is a hairline of progress.
-                    if focus-mode: Rectangle {
-                        y: parent.height - 2px;
-                        x: 0;
-                        width: parent.width;
-                        height: 2px;
-                        background: tokens.border;
-                        Rectangle {
-                            x: 0;
-                            width: parent.width * progress;
-                            height: parent.height;
-                            background: tokens.muted.with-alpha(0.5);
-                        }
-                    }
                 }
 
                 }
 
                 search-panel := SearchPanel {
-                    visible: search-open && !focus-mode && has-book;
-                    width: (search-open && !focus-mode && has-book) ? 300px : 0px;
+                    visible: root.search-showing;
+                    preferred-width: root.search-showing ? 300px : 0px;
+                    min-width: root.search-showing ? 230px : 0px;
+                    max-width: root.search-showing ? 300px : 0px;
+                    horizontal-stretch: 0;
                     tokens: tokens;
                     results: search-results;
                     searching: searching;
@@ -380,6 +394,7 @@ export component AppWindow inherits Window {
                     activate(index) => { goto-search(index); keys.focus(); }
                     dismissed => { search-open = false; keys.focus(); }
                 }
+
             }
 
             Rectangle {
@@ -394,8 +409,9 @@ export component AppWindow inherits Window {
                 }
 
                 HorizontalLayout {
-                    padding-left: 10px;
-                    padding-right: 12px;
+                    // Matching the toolbar above it, which uses 8px both sides.
+                    padding-left: 8px;
+                    padding-right: 8px;
                     spacing: 10px;
 
                     // Chapter stepper: n/p were bound but had no affordance at
@@ -481,17 +497,44 @@ export component AppWindow inherits Window {
             }
         }
 
+        // In focus mode the only chrome left is a hairline of progress. It
+        // belongs on the window's bottom edge: inside the reading area it sat
+        // 52px up, because focus mode letterboxes that area, and left a dead
+        // band beneath it.
+        if focus-mode && has-book: Rectangle {
+            y: parent.height - 2px;
+            x: 0;
+            width: parent.width;
+            height: 2px;
+            background: tokens.border;
+            Rectangle {
+                x: 0;
+                width: parent.width * progress;
+                height: parent.height;
+                // `muted` at half alpha was 1.3:1 against its own track, which
+                // is to say invisible.
+                background: tokens.accent;
+            }
+        }
+
         if settings-open && !focus-mode: Rectangle {
             // A visible scrim: the popover sits over live prose, so it has to
-            // read as "above" rather than as a rendering artifact.
-            background: #000000.with-alpha(0.3);
+            // read as "above" rather than as a rendering artifact. 0.3 black
+            // turns sepia's cream into olive-grey, so the warm themes get a
+            // lighter one; they have the contrast to spare.
+            // Starts below the toolbar so the Settings chip the popover hangs
+            // from stays lit instead of being dimmed by its own popover.
+            y: 46px;
+            height: parent.height - self.y;
+            background: #000000.with-alpha(tokens.dark ? 0.3 : 0.14);
             TouchArea {
                 clicked => { settings-open = false; keys.focus(); }
             }
         }
 
         if settings-open && !focus-mode: SettingsPanel {
-            x: parent.width - self.width - 12px;
+            // Flush with the chip it hangs from, which the toolbar insets 8px.
+            x: parent.width - self.width - 8px;
             y: 52px;
             tokens: tokens;
             families: families;
@@ -507,6 +550,7 @@ export component AppWindow inherits Window {
             set-follow-system(on) => { root.set-follow-system(on); }
             pick-theme(index) => { root.pick-theme(index); }
             set-measure(value) => { root.set-measure(value); }
+            show-shortcuts => { settings-open = false; shortcuts-open = true; }
             dismiss => { settings-open = false; }
         }
 

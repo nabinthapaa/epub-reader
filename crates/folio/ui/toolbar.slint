@@ -28,6 +28,13 @@ export component Toolbar inherits Rectangle {
     callback close-book();
     callback back();
 
+    // Where the page actually is, so the title can sit over it.
+    in property <length> content-left;
+    in property <length> content-width: root.width;
+    // Keeps the title clear of the control clusters either side.
+    private property <length> safe-left: left-cluster.preferred-width + 16px;
+    private property <length> safe-right: right-cluster.preferred-width + 16px;
+
     height: 46px;
     background: tokens.surface;
 
@@ -38,7 +45,11 @@ export component Toolbar inherits Rectangle {
     }
 
     if has-book: HorizontalLayout {
-        x: (parent.width - self.width) / 2;
+        // Centred on the page, not on the window. With Contents open the page
+        // sits 260px to the right, and a window-centred title floats over the
+        // margin instead of over the book it names.
+        x: max(root.safe-left, min(root.content-left + (root.content-width - self.width) / 2,
+                                   root.width - root.safe-right - self.width));
         // Clear whichever cluster is wider, on both sides, so a long title can
         // never slide under a control.
         width: min(self.preferred-width,
@@ -55,7 +66,10 @@ export component Toolbar inherits Rectangle {
             vertical-alignment: center;
             overflow: elide;
         }
-        Text {
+        // The author is the first thing to go: a five-letter stub and an
+        // ellipsis says less than nothing, and it eats the width the title
+        // needs to stay whole.
+        if root.content-width >= 720px: Text {
             text: author != "" ? "  —  " + author : "";
             color: tokens.muted;
             font-size: 13px;

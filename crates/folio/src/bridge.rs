@@ -8,6 +8,8 @@ use folio_core::state::RecentBook;
 use folio_core::theme::{Color, Theme};
 use slint::{ModelRc, SharedString, VecModel};
 
+use slint::StyledText;
+
 use crate::{SearchRow, ShelfRow, TocRow, Tokens};
 
 pub fn color(color: Color) -> slint::Color {
@@ -23,6 +25,7 @@ pub fn tokens(theme: &Theme) -> Tokens {
         accent: color(theme.accent),
         link: color(theme.link),
         border: color(theme.border),
+        dark: theme.preset.is_dark(),
     }
 }
 
@@ -47,11 +50,41 @@ pub fn search_rows(hits: &[SearchHit]) -> ModelRc<SearchRow> {
         .enumerate()
         .map(|(index, hit)| SearchRow {
             label: SharedString::from(hit.chapter_label.as_str()),
-            snippet: SharedString::from(hit.snippet.as_str()),
+            snippet: marked_snippet(hit),
             index: index as i32,
         })
         .collect();
     ModelRc::new(VecModel::from(rows))
+}
+
+/// The snippet with the matched words in bold.
+///
+/// Book text is not markdown, so every character that means something to the
+/// parser has to be escaped first — a snippet beginning with `#` is rejected
+/// outright, and one containing `*` would otherwise set half the line in
+/// italics.
+fn marked_snippet(hit: &SearchHit) -> StyledText {
+    let chars: Vec<char> = hit.snippet.chars().collect();
+    let (start, end) = hit.highlight;
+    let escape = |range: &[char]| {
+        let mut out = String::with_capacity(range.len());
+        for &c in range {
+            if "\\`*_{}[]()#+-.!<>|~".contains(c) {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+        out
+    };
+
+    let markdown = format!(
+        "{}**{}**{}",
+        escape(&chars[..start]),
+        escape(&chars[start..end]),
+        escape(&chars[end..]),
+    );
+    StyledText::from_markdown(&markdown)
+        .unwrap_or_else(|_| StyledText::from_plain_text(&hit.snippet))
 }
 
 pub fn shelf_rows(recents: &[RecentBook], covers_dir: &Path) -> ModelRc<ShelfRow> {

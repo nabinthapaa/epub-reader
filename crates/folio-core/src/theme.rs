@@ -132,8 +132,12 @@ impl Theme {
                 page: Color::rgb(0xF6, 0xEC, 0xD9),
                 surface: Color::rgb(0xEB, 0xDF, 0xC6),
                 text: Color::rgb(0x3B, 0x2F, 0x21),
-                muted: Color::rgb(0x7A, 0x68, 0x51),
-                accent: Color::rgb(0x8A, 0x5A, 0x2B),
+                // Chrome text sits on `surface`, and an active control's
+                // label sits on `accent` at 0.18 over `surface`, which is
+                // tighter still. The old 0x7A6851 and 0x8A5A2B managed 4.05
+                // and 3.65 there; these clear 4.5.
+                muted: Color::rgb(0x72, 0x60, 0x49),
+                accent: Color::rgb(0x71, 0x4A, 0x23),
                 link: Color::rgb(0x8A, 0x4F, 0x1D),
                 selection: Color::rgba(0x8A, 0x5A, 0x2B, 0x3A),
                 border: Color::rgb(0xD9, 0xC9, 0xAA),
@@ -148,7 +152,8 @@ impl Theme {
                 page: Color::rgb(0x1A, 0x1C, 0x1F),
                 surface: Color::rgb(0x24, 0x26, 0x2A),
                 text: Color::rgb(0xCD, 0xCA, 0xC3),
-                muted: Color::rgb(0x8C, 0x8C, 0x88),
+                // 4.61:1 on `surface` rather than 4.49.
+                muted: Color::rgb(0x8E, 0x8E, 0x8A),
                 accent: Color::rgb(0x8A, 0xB4, 0xDE),
                 link: Color::rgb(0x8A, 0xB4, 0xDE),
                 selection: Color::rgba(0x8A, 0xB4, 0xDE, 0x40),
@@ -162,5 +167,96 @@ impl Theme {
 impl Default for Theme {
     fn default() -> Self {
         Self::new(ThemePreset::default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WCAG 2.1 relative luminance.
+    fn luminance(color: Color) -> f64 {
+        let channel = |value: u8| {
+            let value = value as f64 / 255.0;
+            if value <= 0.03928 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+    }
+
+    fn contrast(a: Color, b: Color) -> f64 {
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    /// Composite `over` onto an opaque background, as the renderer does.
+    fn over(top: Color, bottom: Color, alpha: f64) -> Color {
+        let mix = |a: u8, b: u8| (a as f64 * alpha + b as f64 * (1.0 - alpha)).round() as u8;
+        Color::rgb(
+            mix(top.r, bottom.r),
+            mix(top.g, bottom.g),
+            mix(top.b, bottom.b),
+        )
+    }
+
+    /// Every palette has to clear AA for small text, and the tight pair is the
+    /// chrome one: `muted` on `surface`, not on `page`. Sepia used to miss it
+    /// at 4.05:1, which is most of the status bar and every panel.
+    #[test]
+    fn chrome_text_is_legible_in_every_theme() {
+        for preset in [ThemePreset::Light, ThemePreset::Sepia, ThemePreset::Dark] {
+            let theme = Theme::new(preset);
+            for (name, color) in [
+                ("text", theme.text),
+                ("muted", theme.muted),
+                ("accent", theme.accent),
+                ("link", theme.link),
+            ] {
+                for (surface_name, background) in [("page", theme.page), ("surface", theme.surface)]
+                {
+                    let ratio = contrast(color, background);
+                    assert!(
+                        ratio >= 4.5,
+                        "{preset:?}: {name} on {surface_name} is {ratio:.2}:1, under AA",
+                    );
+                }
+            }
+        }
+    }
+
+    /// An active toolbar chip and the current row of the contents both draw
+    /// the accent on a wash of itself, which is tighter than the accent on
+    /// bare surface and is the state a reader most needs to pick out.
+    #[test]
+    fn an_active_control_reads_against_its_own_tint() {
+        // ToolButton uses 0.18, the contents row 0.16.
+        for alpha in [0.18, 0.16] {
+            for preset in [ThemePreset::Light, ThemePreset::Sepia, ThemePreset::Dark] {
+                let theme = Theme::new(preset);
+                let tint = over(theme.accent, theme.surface, alpha);
+                let ratio = contrast(theme.accent, tint);
+                assert!(
+                    ratio >= 4.5,
+                    "{preset:?}: accent on its own {alpha} tint is {ratio:.2}:1, under AA",
+                );
+            }
+        }
+    }
+
+    /// Prose is read for an hour at a time, so it wants more than the minimum.
+    #[test]
+    fn body_text_is_comfortable_rather_than_merely_legal() {
+        for preset in [ThemePreset::Light, ThemePreset::Sepia, ThemePreset::Dark] {
+            let theme = Theme::new(preset);
+            let ratio = contrast(theme.text, theme.page);
+            assert!(
+                (7.0..=14.0).contains(&ratio),
+                "{preset:?}: prose at {ratio:.2}:1 is outside the comfortable band \
+                 (under 7 is thin, over 14 halates on a dark page)",
+            );
+        }
     }
 }

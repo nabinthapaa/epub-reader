@@ -19,7 +19,9 @@ use folio_core::theme::{Theme, ThemePreset};
 use i_slint_backend_testing::{TestingBackend, TestingBackendOptions};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
-slint::include_modules!();
+// The library already generates these; generating a second copy here would
+// make `folio::bridge`'s rows a different type from this window's.
+use folio::{AppWindow, ShelfRow, TocRow, Tokens};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
@@ -79,6 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.set_shelf(ModelRc::new(VecModel::from(rows)));
     }
 
+    let mut reader: Option<Reader> = None;
     if scene != "shelf" {
         // Panels inset the reading area, so render the band at the width it
         // will actually be shown at — otherwise the shot lies about the measure.
@@ -98,31 +101,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .and_then(|store| store.load_recents().first().map(|b| PathBuf::from(&b.path)))
             })
             .ok_or("no book to render: pass one as the last argument")?;
-        load_book(
+        reader = Some(load_book(
             &ui,
             &path,
             theme,
             (width.saturating_sub(panel).max(200), height),
             focus,
-        )?;
+        )?);
     }
 
     match scene.as_str() {
         "toc" => ui.set_toc_open(true),
         "search" => {
+            // A real search, not a mock-up: the panel's job is to show what
+            // this book actually contains, and a hand-written result cannot
+            // show whether the matched words are marked correctly.
             ui.set_search_open(true);
-            ui.set_search_results(ModelRc::new(VecModel::from(vec![
-                SearchRow {
-                    label: "CHAPTER 32. Cetology.".into(),
-                    snippet: "…the Sperm Whale, which is the largest of the whales…".into(),
-                    index: 0,
-                },
-                SearchRow {
-                    label: "CHAPTER 41. Moby Dick.".into(),
-                    snippet: "…a whale of uncommon magnitude and malignity…".into(),
-                    index: 1,
-                },
-            ])));
+            ui.invoke_seed_search("whale".into());
+            if let Some(reader) = reader.as_mut() {
+                ui.set_search_results(folio::bridge::search_rows(&reader.search("whale", 8)));
+            }
         }
         "settings" => {
             ui.set_settings_open(true);
@@ -159,7 +157,7 @@ fn load_book(
     theme: Theme,
     viewport: (u32, u32),
     focus: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<Reader, Box<dyn std::error::Error>> {
     let settings = Settings::default();
     let mut reader = Reader::open(path, &settings, theme.preset, viewport, None)?;
     reader.apply(Command::SetTheme(theme))?;
@@ -224,7 +222,7 @@ fn load_book(
         .collect();
     ui.set_toc(ModelRc::new(VecModel::from(rows)));
     let _: Option<Vec<LinkRegion>> = view.links;
-    Ok(())
+    Ok(reader)
 }
 
 fn tokens(theme: &Theme) -> Tokens {
@@ -237,5 +235,6 @@ fn tokens(theme: &Theme) -> Tokens {
         accent: color(theme.accent),
         link: color(theme.link),
         border: color(theme.border),
+        dark: theme.preset.is_dark(),
     }
 }
