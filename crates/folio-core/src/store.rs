@@ -22,6 +22,19 @@ pub struct Store {
 }
 
 impl Store {
+    /// Keep state under one directory, which is how platforms that hand an app
+    /// its storage (Android) work, rather than where XDG would look.
+    pub fn rooted_at(root: &Path) -> Result<Self> {
+        let config_dir = root.join("config");
+        let data_dir = root.join("data");
+        fs::create_dir_all(&config_dir)?;
+        fs::create_dir_all(data_dir.join("covers"))?;
+        Ok(Self {
+            config_dir,
+            data_dir,
+        })
+    }
+
     /// Locate the app's directories, creating them if needed.
     pub fn new() -> Result<Self> {
         let dirs = ProjectDirs::from("", "", "folio");
