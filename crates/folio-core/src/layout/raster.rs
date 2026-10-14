@@ -240,8 +240,10 @@ fn draw_image(
         return true;
     }
     let faded: Vec<u8> = pixels
-        .chunks_exact(4)
-        .flat_map(|p| [p[0], p[1], p[2], (p[3] as f32 * dim) as u8])
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|[r, g, b, a]| [*r, *g, *b, (*a as f32 * dim) as u8])
         .collect();
     canvas.draw_rgba(x + offset, y, width, height, &faded);
     true
