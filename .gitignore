@@ -1,3 +1,8 @@
 /target
 /.overnight
 /build
+
+# Working notes: kept on disk, not published
+/OVERNIGHT.md
+/OVERNIGHT-REPORT.md
+/UI-REVIEW.md
