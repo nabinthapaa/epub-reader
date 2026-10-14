@@ -182,172 +182,190 @@ export component Shelf inherits Rectangle {
     private property <length> tile-width: 164px;
     private property <length> cover-height: 212px;
     private property <length> tile-height: 304px;
+    private property <length> gap: 16px;
+    // The tiles carry 8px of padding of their own (it is what the hover
+    // highlight needs), so the page padding is 8px short of the margin and the
+    // text rows make it up. Otherwise the heading sits 8px left of the covers.
+    private property <length> pad: 28px;
+    private property <length> text-inset: 8px;
+
+    // Slint has no wrapping layout, so the grid is positioned by hand from the
+    // width that is actually available. One row that scrolls sideways hid
+    // books behind the window edge with nothing to say they were there.
+    private property <length> shelf-width: max(root.width - 2 * root.pad, root.tile-width);
+    private property <int> columns: max(1, floor((root.shelf-width + root.gap) / (root.tile-width + root.gap)));
+    // Every book, plus the cell that opens a new one.
+    private property <int> cells: books.length + 1;
+    private property <int> rows: ceil(root.cells / root.columns);
 
     background: tokens.page;
 
     VerticalLayout {
-        padding: 36px;
+        padding: root.pad;
         spacing: 16px;
-        alignment: start;
 
-        Text {
-            text: "Folio";
-            color: tokens.text;
-            font-size: 28px;
-            font-weight: 700;
+        HorizontalLayout {
+            padding-left: root.text-inset;
             vertical-stretch: 0;
+            Text {
+                text: "Folio";
+                color: tokens.text;
+                font-size: 28px;
+                font-weight: 700;
+            }
         }
 
-        Text {
-            text: books.length > 0 ? "Continue reading" : "Open an EPUB to start reading";
-            color: tokens.muted;
-            font-size: 13px;
+        HorizontalLayout {
+            padding-left: root.text-inset;
             vertical-stretch: 0;
+            Text {
+                text: books.length > 0 ? "Continue reading" : "Open an EPUB to start reading";
+                color: tokens.muted;
+                font-size: 13px;
+            }
         }
 
         Flickable {
-            min-height: root.tile-height + 12px;
-            max-height: root.tile-height + 12px;
-            viewport-width: (books.length + 1) * (root.tile-width + 16px) + 16px;
-            viewport-height: root.tile-height;
+            vertical-stretch: 1;
+            viewport-width: self.width;
+            viewport-height: root.rows * (root.tile-height + root.gap);
 
-            HorizontalLayout {
-                spacing: 16px;
-                alignment: start;
+            for book[index] in books: Rectangle {
+                x: (index - floor(index / root.columns) * root.columns) * (root.tile-width + root.gap);
+                y: floor(index / root.columns) * (root.tile-height + root.gap);
+                width: root.tile-width;
+                height: root.tile-height;
+                border-radius: 8px;
+                background: tile.has-hover ? tokens.text.with-alpha(0.07) : transparent;
+                animate background { duration: 90ms; }
 
-                for book in books: Rectangle {
-                    min-width: root.tile-width;
-                    max-width: root.tile-width;
-                    min-height: root.tile-height;
-                    max-height: root.tile-height;
-                    border-radius: 8px;
-                    background: tile.has-hover ? tokens.text.with-alpha(0.07) : transparent;
-                    animate background { duration: 90ms; }
+                VerticalLayout {
+                    padding: 8px;
+                    spacing: 8px;
+                    alignment: start;
 
-                    VerticalLayout {
-                        padding: 8px;
-                        spacing: 8px;
-                        alignment: start;
+                    Rectangle {
+                        min-height: root.cover-height;
+                        max-height: root.cover-height;
+                        border-radius: 4px;
+                        background: tokens.surface;
+                        border-width: 1px;
+                        border-color: tokens.border;
+                        clip: true;
 
-                        Rectangle {
-                            min-height: root.cover-height;
-                            max-height: root.cover-height;
-                            border-radius: 4px;
-                            background: tokens.surface;
-                            border-width: 1px;
-                            border-color: tokens.border;
-                            clip: true;
-
-                            if book.cover.width > 0: Image {
-                                source: book.cover;
-                                width: parent.width;
-                                height: parent.height;
-                                image-fit: contain;
-                            }
-                            if book.progress > 0: Rectangle {
-                                y: parent.height - 3px;
-                                x: 0;
-                                width: parent.width * book.progress / 100;
-                                height: 3px;
-                                background: tokens.accent;
-                            }
-                            // Books with no cover get their title instead of a
-                            // blank rectangle.
-                            if book.cover.width == 0: Text {
-                                text: book.title;
-                                color: tokens.muted;
-                                font-size: 13px;
-                                width: parent.width - 20px;
-                                x: 10px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                                wrap: word-wrap;
-                                overflow: elide;
-                            }
+                        if book.cover.width > 0: Image {
+                            source: book.cover;
+                            width: parent.width;
+                            height: parent.height;
+                            image-fit: contain;
                         }
-
-                        Text {
+                        if book.progress > 0: Rectangle {
+                            y: parent.height - 3px;
+                            x: 0;
+                            width: parent.width * book.progress / 100;
+                            height: 3px;
+                            background: tokens.accent;
+                        }
+                        // Books with no cover get their title instead of a
+                        // blank rectangle.
+                        if book.cover.width == 0: Text {
                             text: book.title;
-                            color: tokens.text;
-                            font-size: 12px;
-                            font-weight: 600;
-                            wrap: word-wrap;
-                            // Two lines were already reserved; eliding threw
-                            // away the tail of every title for nothing.
-                            min-height: 48px;
-                            max-height: 48px;
-                        }
-
-                        Text {
-                            text: book.author;
                             color: tokens.muted;
-                            font-size: 11px;
+                            font-size: 13px;
+                            width: parent.width - 20px;
+                            x: 10px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
                             overflow: elide;
-                            min-height: 14px;
                         }
                     }
 
-                    tile := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { open-book(book.index); }
+                    Text {
+                        text: book.title;
+                        color: tokens.text;
+                        font-size: 12px;
+                        font-weight: 600;
+                        wrap: word-wrap;
+                        // Two lines were already reserved; eliding threw
+                        // away the tail of every title for nothing.
+                        min-height: 48px;
+                        max-height: 48px;
+                    }
+
+                    Text {
+                        text: book.author;
+                        color: tokens.muted;
+                        font-size: 11px;
+                        overflow: elide;
+                        min-height: 14px;
                     }
                 }
 
-                // Matches the cover box, not the whole tile, so the row of
-                // artwork reads as one band.
-                Rectangle {
-                    min-width: root.tile-width;
-                    max-width: root.tile-width;
-                    min-height: root.tile-height;
-                    max-height: root.tile-height;
+                tile := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { open-book(book.index); }
+                }
+            }
 
-                    add-box := Rectangle {
-                        y: 8px;
-                        x: 8px;
-                        width: parent.width - 16px;
-                        height: root.cover-height;
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: tokens.border;
-                        background: add.has-hover ? tokens.text.with-alpha(0.07) : transparent;
-                        animate background { duration: 90ms; }
-                    }
+            // Matches the cover box, not the whole tile, so the row of
+            // artwork reads as one band.
+            Rectangle {
+                x: (books.length - floor(books.length / root.columns) * root.columns) * (root.tile-width + root.gap);
+                y: floor(books.length / root.columns) * (root.tile-height + root.gap);
+                width: root.tile-width;
+                height: root.tile-height;
 
-                    VerticalLayout {
-                        y: 8px;
-                        height: root.cover-height;
-                        alignment: center;
-                        spacing: 6px;
-                        Text {
-                            text: "+";
-                            color: tokens.muted;
-                            font-size: 30px;
-                            horizontal-alignment: center;
-                        }
-                        Text {
-                            text: "Open file…";
-                            color: tokens.muted;
-                            font-size: 12px;
-                            horizontal-alignment: center;
-                        }
-                    }
+                add-box := Rectangle {
+                    y: 8px;
+                    x: 8px;
+                    width: parent.width - 16px;
+                    height: root.cover-height;
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: tokens.border;
+                    background: add.has-hover ? tokens.text.with-alpha(0.07) : transparent;
+                    animate background { duration: 90ms; }
+                }
 
-                    add := TouchArea {
-                        x: 8px;
-                        y: 8px;
-                        width: parent.width - 16px;
-                        height: root.cover-height;
-                        mouse-cursor: pointer;
-                        clicked => { open-file(); }
+                VerticalLayout {
+                    y: 8px;
+                    height: root.cover-height;
+                    alignment: center;
+                    spacing: 6px;
+                    Text {
+                        text: "+";
+                        color: tokens.muted;
+                        font-size: 30px;
+                        horizontal-alignment: center;
                     }
+                    Text {
+                        text: "Open file…";
+                        color: tokens.muted;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                    }
+                }
+
+                add := TouchArea {
+                    x: 8px;
+                    y: 8px;
+                    width: parent.width - 16px;
+                    height: root.cover-height;
+                    mouse-cursor: pointer;
+                    clicked => { open-file(); }
                 }
             }
         }
 
-        Text {
-            text: "Ctrl+O opens a book · ? for keyboard shortcuts";
-            color: tokens.muted;
-            font-size: 11px;
+        HorizontalLayout {
+            padding-left: root.text-inset;
+            vertical-stretch: 0;
+            Text {
+                text: "Ctrl+O opens a book · ? for keyboard shortcuts";
+                color: tokens.muted;
+                font-size: 11px;
+            }
         }
     }
 }

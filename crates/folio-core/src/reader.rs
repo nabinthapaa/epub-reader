@@ -71,8 +71,15 @@ pub enum Command {
     ScrollSteps(f32),
     /// Jump to a fraction of the chapter, for dragging the scrollbar.
     ScrollTo(f32),
-    /// Jump whole chapters.
+    /// Jump whole spine documents.
     Chapter(i32),
+    /// Step to the next or previous table-of-contents entry.
+    ///
+    /// This is what the status bar's stepper sends, because the label beside it
+    /// names a TOC entry. Most Gutenberg EPUBs put ten or more chapters in one
+    /// spine document, so stepping documents there would skip most of the book
+    /// the reader can see named in Contents.
+    Section(i32),
     GoTo(Position),
     /// Jump to a table-of-contents entry, honoring its fragment.
     GoToToc(usize),
@@ -129,7 +136,7 @@ pub struct View {
     pub progress: f32,
     /// Fraction of the current chapter above the viewport.
     pub chapter_progress: f32,
-    /// Rough minutes of reading left in this chapter, when it is worth saying.
+    /// Rough minutes of reading left in this section, when it is worth saying.
     pub minutes_left: Option<u32>,
     /// Set when this frame begins a new chapter.
     pub transition: Option<Transition>,
@@ -378,22 +385,8 @@ impl Reader {
                 self.go_to(position)?;
                 self.note_chapter_change(from);
             }
-            Command::GoToToc(index) => {
-                if let Some(target) = self
-                    .book
-                    .toc()
-                    .get(index)
-                    .and_then(|item| item.target.clone())
-                {
-                    let from_position = self.position()?;
-                    let from_chapter = self.cursor.chapter;
-                    let position =
-                        self.position_for_anchor(target.chapter, target.anchor.as_deref())?;
-                    self.history.push(from_position);
-                    self.go_to(position)?;
-                    self.note_chapter_change(from_chapter);
-                }
-            }
+            Command::GoToToc(index) => self.go_to_toc(index, true)?,
+            Command::Section(delta) => self.step_section(delta)?,
             Command::FollowLink(href) => {
                 if let Some(Target { chapter, anchor }) =
                     self.book.resolve_link(self.cursor.chapter, &href)
@@ -488,14 +481,57 @@ impl Reader {
     /// Minutes of reading left in the current chapter at ~250 words a minute,
     /// or `None` when it is less than a minute and not worth saying.
     pub fn minutes_left(&mut self) -> Option<u32> {
-        let remaining = 1.0 - self.chapter_fraction();
-        let chars = self
-            .chapter_chars
-            .get(self.cursor.chapter)
-            .copied()
-            .flatten()?;
-        let minutes = (chars as f32 * remaining / 5.0 / 250.0).round() as u32;
+        let chars = self.section_chars_left()?;
+        let minutes = (chars as f32 / 5.0 / 250.0).round() as u32;
         (minutes >= 1).then_some(minutes)
+    }
+
+    /// Characters between the top of the viewport and the end of the section
+    /// the status bar is naming.
+    ///
+    /// Scoped to the table-of-contents entry rather than the spine document,
+    /// because that is what the label beside it says. Gutenberg's Moby Dick is
+    /// twelve documents of about ninety reading-minutes each, so a
+    /// document-scoped estimate sits beside "CHAPTER 9. The Sermon." claiming
+    /// an hour and a half for a ten-minute chapter.
+    fn section_chars_left(&mut self) -> Option<usize> {
+        let chapter = self.cursor.chapter;
+        // Measured from the bottom of the viewport: what is already on screen
+        // is not time left, and counting it would never let the estimate reach
+        // zero at the end of a section.
+        let from = self.last_visible_block();
+        let key = self.ensure_layout(chapter).ok()?;
+        let entry = self.layouts.peek(&key)?;
+
+        // The next entry that starts below us ends the section; without one the
+        // section runs to the end of the document.
+        let mut end = usize::MAX;
+        for item in self.book.toc() {
+            let Some(target) = &item.target else { continue };
+            if target.chapter != chapter || item.label.trim().is_empty() {
+                continue;
+            }
+            let Some(anchor) = target.anchor.as_deref() else {
+                continue;
+            };
+            if let Some(&block) = entry.layout.anchors.get(anchor)
+                && block > from
+                && block < end
+            {
+                end = block;
+            }
+        }
+
+        let parsed = self.chapter(chapter).ok()?;
+        let end = end.min(parsed.blocks.len());
+        Some(
+            parsed
+                .blocks
+                .get(from..end)?
+                .iter()
+                .map(|block| block.text().chars().count())
+                .sum(),
+        )
     }
 
     /// How far through the current chapter the viewport is.
@@ -553,6 +589,62 @@ impl Reader {
             }
         }
         hits
+    }
+
+    /// Jump to a table-of-contents entry, honoring its fragment.
+    ///
+    /// `push_history` is false for the status bar's stepper: the back stack
+    /// exists so a followed footnote can be undone, and filling it with every
+    /// chapter step would make `Backspace` mean two different things.
+    fn go_to_toc(&mut self, index: usize, push_history: bool) -> Result<()> {
+        let Some(target) = self
+            .book
+            .toc()
+            .get(index)
+            .and_then(|item| item.target.clone())
+        else {
+            return Ok(());
+        };
+        let from_position = self.position()?;
+        let from_chapter = self.cursor.chapter;
+        let position = self.position_for_anchor(target.chapter, target.anchor.as_deref())?;
+        if push_history {
+            self.history.push(from_position);
+        }
+        self.go_to(position)?;
+        self.note_chapter_change(from_chapter);
+        Ok(())
+    }
+
+    /// Step the table of contents by `delta` entries from the one we are in.
+    ///
+    /// Books with no usable table of contents fall back to stepping spine
+    /// documents, which is the best "next chapter" such a book can offer.
+    fn step_section(&mut self, delta: i32) -> Result<()> {
+        let usable = self.usable_toc();
+        if usable.len() < 2 {
+            return self.mutate(Command::Chapter(delta));
+        }
+        let here = self
+            .active_toc()
+            .and_then(|current| usable.iter().position(|&index| index == current))
+            .unwrap_or(0);
+        let target = (here as i64 + delta as i64).clamp(0, usable.len() as i64 - 1) as usize;
+        if target == here {
+            return Ok(());
+        }
+        self.go_to_toc(usable[target], false)
+    }
+
+    /// Table-of-contents entries that can actually be navigated to.
+    fn usable_toc(&self) -> Vec<usize> {
+        self.book
+            .toc()
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.target.is_some() && !item.label.trim().is_empty())
+            .map(|(index, _)| index)
+            .collect()
     }
 
     /// The table-of-contents row the viewport sits inside.
@@ -757,6 +849,18 @@ impl Reader {
         self.layouts
             .peek(&key)
             .map(|entry| entry.flow.first_line_at(&entry.layout, scroll).0)
+            .unwrap_or(0)
+    }
+
+    /// The block under the bottom edge of the viewport.
+    fn last_visible_block(&mut self) -> usize {
+        let bottom = self.cursor.scroll + self.content_height();
+        let Ok(key) = self.ensure_layout(self.cursor.chapter) else {
+            return 0;
+        };
+        self.layouts
+            .peek(&key)
+            .map(|entry| entry.flow.first_line_at(&entry.layout, bottom).0)
             .unwrap_or(0)
     }
 

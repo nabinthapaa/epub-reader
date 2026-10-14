@@ -443,3 +443,72 @@ fn search_survives_text_whose_case_folding_changes_its_length() {
     assert_eq!(reader.search("\u{212B}ngstr\u{f6}m", 5).len(), 1);
     assert_eq!(reader.search("\u{1e9e}", 5).len(), 1);
 }
+
+/// Most Gutenberg EPUBs put a dozen chapters in one spine document, so the
+/// status bar's stepper and its time estimate have to follow the table of
+/// contents, not the spine, or they describe something the reader cannot see.
+#[test]
+fn the_stepper_follows_the_contents_inside_one_spine_document() {
+    let one_document = format!(
+        r#"<h1 id="a">First</h1>{}<h1 id="b">Second</h1>{}<h1 id="c">Third</h1>{}"#,
+        support::paragraphs(30),
+        support::paragraphs(30),
+        support::paragraphs(30),
+    );
+    let book = FakeBook::new(vec![("all.xhtml", one_document.as_str())]).with_toc(
+        ["a", "b", "c"]
+            .into_iter()
+            .zip(["First", "Second", "Third"])
+            .map(|(anchor, label)| TocItem {
+                label: label.into(),
+                depth: 0,
+                target: Some(Target {
+                    chapter: 0,
+                    anchor: Some(anchor.into()),
+                }),
+            })
+            .collect(),
+    );
+    let mut reader = Reader::with_book(
+        Box::new(book),
+        "/tmp/gutenberg.epub".into(),
+        &Settings::default(),
+        ThemePreset::Light,
+        VIEWPORT,
+        None,
+    )
+    .expect("reader opens");
+
+    let start = reader.apply(Command::Refresh).unwrap();
+    assert_eq!(start.chapter_label, "First");
+    let whole_document = start
+        .minutes_left
+        .expect("three sections of prose take minutes");
+
+    // There is only one spine document, so stepping documents can go nowhere.
+    let stepped = reader.apply(Command::Section(1)).unwrap();
+    assert_eq!(stepped.chapter, 0, "still inside the same spine document");
+    assert_eq!(stepped.chapter_label, "Second");
+    assert!(
+        stepped.scroll > start.scroll,
+        "the second section is further down the document"
+    );
+
+    let back = reader.apply(Command::Section(-1)).unwrap();
+    assert_eq!(back.chapter_label, "First");
+    assert_eq!(back.scroll, start.scroll);
+
+    // And the estimate beside that label is scoped to the section it names,
+    // not to the whole document the three sections share.
+    let last = reader.apply(Command::Section(2)).unwrap();
+    assert_eq!(last.chapter_label, "Third");
+    let final_section = last.minutes_left.unwrap_or(0);
+    assert!(
+        final_section <= whole_document + 1,
+        "the last section is no longer than the first: {final_section} vs {whole_document}"
+    );
+
+    // Stepping past the end stays put rather than wrapping or panicking.
+    let past = reader.apply(Command::Section(5)).unwrap();
+    assert_eq!(past.chapter_label, "Third");
+}
